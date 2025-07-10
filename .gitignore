@@ -1,0 +1,4 @@
+/target
+/debug
+*.wav
+/models/*.bin
