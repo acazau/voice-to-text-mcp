@@ -49,7 +49,7 @@ Run as an MCP server for integration with MCP clients:
 
 ```bash
 # Run as MCP server with Whisper model
-./target/release/voice-to-text-mcp --mcp-server ggml-base.en.bin
+./target/release/voice-to-text-mcp --mcp-server models/ggml-base.en.bin
 
 # Run as MCP server without model (placeholder mode)
 ./target/release/voice-to-text-mcp --mcp-server
@@ -66,11 +66,13 @@ Run as an MCP server for integration with MCP clients:
 Run in interactive mode for testing and development:
 
 ```bash
-# Download a model (example)
+# Download models to models/ directory
+cd models
 wget https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin
+cd ..
 
 # Run with the model
-./target/release/voice-to-text-mcp ggml-base.en.bin
+./target/release/voice-to-text-mcp models/ggml-base.en.bin
 
 # Run without model (placeholder mode)
 ./target/release/voice-to-text-mcp
@@ -91,19 +93,19 @@ Enable debug mode to save WAV files for troubleshooting:
 
 ```bash
 # Using environment variable
-VOICE_DEBUG=true ./target/release/voice-to-text-mcp ggml-base.en.bin
+VOICE_DEBUG=true ./target/release/voice-to-text-mcp models/ggml-base.en.bin
 
 # Using command line flag
-./target/release/voice-to-text-mcp --debug ggml-base.en.bin
+./target/release/voice-to-text-mcp --debug models/ggml-base.en.bin
 
 # Custom debug directory
-./target/release/voice-to-text-mcp --debug --debug-dir ./my_debug_folder ggml-base.en.bin
+./target/release/voice-to-text-mcp --debug --debug-dir ./my_debug_folder models/ggml-base.en.bin
 
 # MCP server with debug mode
-./target/release/voice-to-text-mcp --mcp-server --debug ggml-base.en.bin
+./target/release/voice-to-text-mcp --mcp-server --debug models/ggml-base.en.bin
 
 # Control what gets saved
-./target/release/voice-to-text-mcp --debug --save-raw --save-processed ggml-base.en.bin
+./target/release/voice-to-text-mcp --debug --save-raw --save-processed models/ggml-base.en.bin
 ```
 
 **Debug Features:**
@@ -148,16 +150,62 @@ Test coverage includes:
 
 ## MCP Integration
 
-This server can be integrated with any MCP-compatible client:
+This server can be integrated with any MCP-compatible client.
 
-### Claude Desktop Integration
-Add to your MCP configuration:
+### Claude Code Integration
+
+**Add the server to your project:**
+```bash
+# Build the project first
+cargo build --release
+
+# Add to Claude Code (project scope)
+claude mcp add --scope project voice-to-text -- ./target/release/voice-to-text-mcp --mcp-server models/ggml-base.en.bin
+
+# Add to Claude Code (user scope - available across all projects)
+claude mcp add --scope user voice-to-text -- /full/path/to/target/release/voice-to-text-mcp --mcp-server /full/path/to/models/ggml-base.en.bin
+
+# Verify configuration
+claude mcp list
+```
+
+**Quick Voice Recording Shortcuts:**
+This project includes custom Claude Code slash commands for easy voice recording:
+
+- **`/rc`** - Begin voice recording
+- **`/st`** - Stop recording and get transcription
+- **`/cr`** - Check current recording state
+- **`/tr [path]`** - Transcribe an existing WAV file
+
+**Example workflow:**
+```bash
+/rc            # Start recording
+# [Speak your message] 
+/st            # Get transcription
+/cr            # Check status anytime
+```
+
+The slash commands are automatically available when you open this project in Claude Code.
+
+**Project-level configuration (`.mcp.json`):**
 ```json
 {
   "mcpServers": {
     "voice-to-text": {
-      "command": "/path/to/voice-to-text-mcp",
-      "args": ["--mcp-server", "ggml-base.en.bin"]
+      "command": "./target/release/voice-to-text-mcp",
+      "args": ["--mcp-server", "models/ggml-base.en.bin"]
+    }
+  }
+}
+```
+
+### Claude Desktop Integration
+```json
+{
+  "mcpServers": {
+    "voice-to-text": {
+      "command": "/full/path/to/target/release/voice-to-text-mcp",
+      "args": ["--mcp-server", "/full/path/to/models/ggml-base.en.bin"]
     }
   }
 }

@@ -2,3 +2,4 @@
 /debug
 *.wav
 /models/*.bin
+.mcp.json

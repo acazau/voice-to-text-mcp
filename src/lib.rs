@@ -33,7 +33,7 @@ impl Default for DebugConfig {
 pub struct VoiceToTextService {
     is_recording: Arc<AtomicBool>,
     audio_data: Arc<Mutex<Vec<f32>>>,
-    whisper_context: Arc<Mutex<Option<WhisperContext>>>,
+    whisper_context: Arc<tokio::sync::Mutex<Option<WhisperContext>>>,
     debug_config: DebugConfig,
 }
 
@@ -46,7 +46,7 @@ impl VoiceToTextService {
         Self {
             is_recording: Arc::new(AtomicBool::new(false)),
             audio_data: Arc::new(Mutex::new(Vec::new())),
-            whisper_context: Arc::new(Mutex::new(None)),
+            whisper_context: Arc::new(tokio::sync::Mutex::new(None)),
             debug_config,
         }
     }
@@ -64,7 +64,7 @@ impl VoiceToTextService {
         Ok(Self {
             is_recording: Arc::new(AtomicBool::new(false)),
             audio_data: Arc::new(Mutex::new(Vec::new())),
-            whisper_context: Arc::new(Mutex::new(Some(ctx))),
+            whisper_context: Arc::new(tokio::sync::Mutex::new(Some(ctx))),
             debug_config,
         })
     }
@@ -172,7 +172,7 @@ impl VoiceToTextService {
         }
 
         // Check if we have a Whisper model loaded
-        let whisper_ctx = self.whisper_context.lock().unwrap();
+        let whisper_ctx = self.whisper_context.lock().await;
         if let Some(ref _ctx) = *whisper_ctx {
             drop(whisper_ctx); // Release the lock before processing
             
@@ -246,21 +246,21 @@ impl VoiceToTextService {
             resampled.push(sample);
         }
         
-        println!("🔄 Resampled {} samples ({}Hz) -> {} samples ({}Hz)", 
+        eprintln!("🔄 Resampled {} samples ({}Hz) -> {} samples ({}Hz)", 
                 audio_data.len(), input_rate, resampled.len(), output_rate);
         
         resampled
     }
 
     async fn transcribe_with_whisper(&self, audio_data: &[f32]) -> Result<String> {
-        let whisper_ctx = self.whisper_context.lock().unwrap();
+        let whisper_ctx = self.whisper_context.lock().await;
         if let Some(ref ctx) = *whisper_ctx {
             // Audio validation and debugging
             let duration_seconds = audio_data.len() as f32 / 16000.0;
             let max_amplitude = audio_data.iter().map(|&x| x.abs()).max_by(|a, b| a.partial_cmp(b).unwrap()).unwrap_or(0.0);
             let rms = (audio_data.iter().map(|&x| x * x).sum::<f32>() / audio_data.len() as f32).sqrt();
             
-            println!("🎤 Audio stats: {:.2}s duration, max amplitude: {:.4}, RMS: {:.4}", 
+            eprintln!("🎤 Audio stats: {:.2}s duration, max amplitude: {:.4}, RMS: {:.4}", 
                     duration_seconds, max_amplitude, rms);
             
             // Check minimum requirements
@@ -287,7 +287,7 @@ impl VoiceToTextService {
             params.set_max_initial_ts(1.0);
             params.set_length_penalty(-1.0);
             
-            println!("🤖 Running Whisper transcription...");
+            eprintln!("🤖 Running Whisper transcription...");
             
             // Run the transcription
             let mut state = ctx.create_state()?;
@@ -295,7 +295,7 @@ impl VoiceToTextService {
             
             // Collect the transcribed text with detailed logging
             let num_segments = state.full_n_segments()?;
-            println!("📝 Whisper found {} segments", num_segments);
+            eprintln!("📝 Whisper found {} segments", num_segments);
             
             let mut result = String::new();
             let mut all_segments = Vec::new();
@@ -305,7 +305,7 @@ impl VoiceToTextService {
                 let start_time = state.full_get_segment_t0(i)?;
                 let end_time = state.full_get_segment_t1(i)?;
                 
-                println!("   Segment {}: [{:.2}s-{:.2}s] '{}'", i, start_time as f32 / 100.0, end_time as f32 / 100.0, segment_text);
+                eprintln!("   Segment {}: [{:.2}s-{:.2}s] '{}'", i, start_time as f32 / 100.0, end_time as f32 / 100.0, segment_text);
                 all_segments.push(segment_text.clone());
                 result.push_str(&segment_text);
             }
@@ -318,7 +318,6 @@ impl VoiceToTextService {
             } else if trimmed_result == "[SOUND]" || trimmed_result.contains("[SOUND]") {
                 Ok(format!("Whisper detected audio but no clear speech: '{}' - try speaking louder/clearer or recording longer", trimmed_result))
             } else {
-                println!("✅ Transcription successful: '{}'", trimmed_result);
                 Ok(trimmed_result.to_string())
             }
         } else {
@@ -360,7 +359,7 @@ impl VoiceToTextService {
         }
         writer.finalize()?;
 
-        println!("🔧 Debug: Saved {} samples to {}", audio_data.len(), filepath.display());
+        eprintln!("🔧 Debug: Saved {} samples to {}", audio_data.len(), filepath.display());
         Ok(())
     }
 
@@ -373,13 +372,13 @@ impl VoiceToTextService {
     }
 
     pub async fn transcribe_wav_file(&self, wav_path: &str) -> Result<String> {
-        println!("📁 Loading WAV file: {}", wav_path);
+        eprintln!("📁 Loading WAV file: {}", wav_path);
         
         // Read the WAV file
         let mut reader = WavReader::open(wav_path)?;
         let spec = reader.spec();
         
-        println!("🎵 WAV specs: {}Hz, {} channels, {} bits", 
+        eprintln!("🎵 WAV specs: {}Hz, {} channels, {} bits", 
                 spec.sample_rate, spec.channels, spec.bits_per_sample);
         
         // Read all samples as f32
@@ -399,17 +398,28 @@ impl VoiceToTextService {
         
         // Convert stereo to mono if needed
         if spec.channels == 2 {
-            println!("🔄 Converting stereo to mono");
+            eprintln!("🔄 Converting stereo to mono");
             let mono_data: Vec<f32> = audio_data.chunks(2)
                 .map(|chunk| (chunk[0] + chunk.get(1).unwrap_or(&0.0)) / 2.0)
                 .collect();
             audio_data = mono_data;
         }
         
-        println!("📊 Loaded {} samples from WAV file", audio_data.len());
+        eprintln!("📊 Loaded {} samples from WAV file", audio_data.len());
         
         // Transcribe using the existing pipeline
         self.transcribe_audio(audio_data).await
+    }
+}
+
+impl std::fmt::Debug for VoiceToTextService {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VoiceToTextService")
+            .field("is_recording", &self.is_recording)
+            .field("audio_data_len", &self.audio_data.lock().unwrap().len())
+            .field("has_whisper_context", &"<async_mutex>")
+            .field("debug_config", &self.debug_config)
+            .finish()
     }
 }
 

@@ -1676,6 +1676,7 @@ dependencies = [
  "mockall",
  "proptest",
  "rmcp",
+ "schemars",
  "serde",
  "serde_json",
  "tokio",
