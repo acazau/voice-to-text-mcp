@@ -121,13 +121,31 @@ VOICE_DEBUG=true ./target/release/voice-to-text-mcp models/ggml-base.en.bin
 - Helpful for troubleshooting audio issues and Whisper input validation
 
 ### Model Download
-Download Whisper models from: https://huggingface.co/ggerganov/whisper.cpp
 
-Recommended models:
-- `ggml-tiny.en.bin` - Fastest, English only
-- `ggml-base.en.bin` - Good balance of speed/accuracy, English only  
-- `ggml-small.en.bin` - Better accuracy, English only
-- `ggml-base.bin` - Multilingual support
+Use our interactive download script (recommended):
+```bash
+./scripts/download-models.sh
+```
+
+The script provides:
+- 🎯 Interactive menu with model recommendations by use case
+- 📊 Model sizes, descriptions, and performance info
+- ✅ Automatic detection of existing models (avoids re-downloading)
+- 🔄 Resume capability for interrupted downloads
+- 💾 Disk space validation before downloading
+- 🌈 User-friendly colorized interface
+
+**Quick recommendations:**
+- **Development**: `ggml-tiny.en.bin` (75MB) - Fastest for testing
+- **Most users**: `ggml-base.en.bin` (142MB) - Best balance ⭐
+- **High quality**: `ggml-small.en.bin` (466MB) - Better accuracy
+- **Multilingual**: `ggml-base.bin` (142MB) - Good for non-English
+
+**Manual download alternative:**
+```bash
+cd models/
+wget https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin
+```
 
 ## Testing
 
@@ -317,6 +335,21 @@ The implementation provides a complete voice-to-text MCP server. Future enhancem
 - **Whisper Engine**: Hardware-accelerated speech recognition (Metal/CoreML/CUDA) with CPU fallback
 - **Audio Pipeline**: Real-time capture, resampling, and preprocessing
 - **Debug System**: Audio file saving and analysis tools
+- **Model Downloader**: Interactive script for easy Whisper model management (`scripts/download-models.sh`)
+
+### Project Structure
+```
+voice-to-text-mcp/
+├── src/                     # Rust source code
+│   ├── lib.rs              # Core VoiceToTextService
+│   ├── mcp_server.rs       # MCP protocol implementation
+│   └── main.rs             # CLI entry point
+├── scripts/                # Utility scripts
+│   └── download-models.sh  # Interactive model downloader
+├── models/                 # Whisper model files (downloaded)
+├── tests/                  # Test suites
+└── target/                 # Build artifacts
+```
 
 ## License
 
