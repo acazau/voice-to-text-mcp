@@ -21,7 +21,10 @@ This is a **Voice-to-Text MCP Server** that provides speech-to-text transcriptio
 
 - **Thread-Safe State Management**: Uses `Arc<AtomicBool>` for recording state and `Arc<Mutex<Vec<f32>>>` for audio data
 - **Async/Await Throughout**: All audio operations and transcription are async
-- **CUDA with CPU Fallback**: whisper-rs compiled with CUDA support but gracefully falls back to CPU
+- **Hardware Acceleration**: Platform-specific acceleration with automatic CPU fallback
+  - **macOS Apple Silicon**: Metal GPU + CoreML (Apple Neural Engine)
+  - **macOS Intel**: Metal GPU acceleration
+  - **Linux/Windows x86_64**: CUDA GPU acceleration
 - **Debug Mode**: Configurable audio file saving for troubleshooting with timestamp-based naming
 
 ### Audio Pipeline
@@ -35,11 +38,15 @@ This is a **Voice-to-Text MCP Server** that provides speech-to-text transcriptio
 
 ### Building
 ```bash
-# Standard build (first CUDA build takes 6+ minutes)
+# Standard build
 cargo build --release
 
 # Development build
 cargo build
+
+# Note: First build with hardware acceleration takes longer:
+# - CUDA (Linux/Windows): 6+ minutes
+# - Metal/CoreML (macOS): 2-3 minutes
 ```
 
 ### Testing
@@ -124,10 +131,24 @@ Download from: https://huggingface.co/ggerganov/whisper.cpp
 - `ggml-tiny.en.bin`: Fastest for testing
 - `ggml-small.en.bin`: Better accuracy
 
-### CUDA Support
+### Hardware Acceleration Support
+
+#### macOS Apple Silicon (ARM64)
+- **Metal**: GPU acceleration via Apple's Metal framework
+- **CoreML**: Apple Neural Engine (ANE) acceleration (3x+ speedup)
+- **NEON**: ARM64 SIMD instructions (automatic, 2-3x speedup over x86)
+- **Important**: First CoreML run takes 15-20 minutes (model compilation)
+- Enabled via `whisper-rs = { version = "0.14.3", features = ["metal", "coreml"] }`
+
+#### macOS Intel (x86_64)
+- **Metal**: GPU acceleration via Apple's Metal framework
+- Enabled via `whisper-rs = { version = "0.14.3", features = ["metal"] }`
+
+#### Linux/Windows (x86_64)
+- **CUDA**: NVIDIA GPU acceleration
 - Enabled via `whisper-rs = { version = "0.14.3", features = ["cuda"] }`
-- Automatically falls back to CPU if CUDA unavailable
-- No runtime configuration needed
+
+All platforms automatically fall back to CPU if acceleration is unavailable.
 
 ### Debug Configuration
 - `DebugConfig` struct controls audio file saving

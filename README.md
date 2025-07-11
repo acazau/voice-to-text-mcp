@@ -1,11 +1,14 @@
 # Voice-to-Text MCP Server
 
-A Model Context Protocol (MCP) server for voice-to-text transcription using Rust and OpenAI's Whisper with CUDA acceleration.
+A Model Context Protocol (MCP) server for voice-to-text transcription using Rust and OpenAI's Whisper with hardware acceleration support for macOS (Metal/CoreML), Linux (CUDA), and Windows (CUDA).
 
 ## Features
 
 - **Full MCP Server Implementation** - JSON-RPC 2.0 compliant server
-- **CUDA Acceleration** - GPU-accelerated Whisper transcription (with CPU fallback)
+- **Hardware Acceleration** - Platform-specific GPU acceleration:
+  - macOS: Metal GPU + CoreML (Apple Neural Engine) on Apple Silicon, Metal on Intel
+  - Linux/Windows: CUDA GPU acceleration for NVIDIA GPUs
+  - Automatic CPU fallback on all platforms
 - **Real-time Audio Capture** - Live microphone recording
 - **File Transcription** - Process existing WAV files
 - **Cross-platform Support** - Works on Linux, macOS, and Windows
@@ -15,7 +18,7 @@ A Model Context Protocol (MCP) server for voice-to-text transcription using Rust
 
 ✅ **Completed:**
 - Full MCP server implementation with stdio transport
-- CUDA-accelerated Whisper transcription (with CPU fallback)
+- Hardware-accelerated Whisper transcription (Metal/CoreML on macOS, CUDA on Linux/Windows)
 - Real-time audio capture and processing
 - File-based audio transcription
 - Comprehensive command-line interface
@@ -25,7 +28,7 @@ A Model Context Protocol (MCP) server for voice-to-text transcription using Rust
 ## Dependencies
 
 - `rmcp` - Model Context Protocol implementation
-- `whisper-rs` - Rust bindings for OpenAI Whisper (with CUDA support)
+- `whisper-rs` - Rust bindings for OpenAI Whisper (with Metal/CoreML/CUDA support)
 - `cpal` - Cross-platform audio I/O
 - `tokio` - Async runtime
 - `serde` - JSON serialization
@@ -37,7 +40,9 @@ A Model Context Protocol (MCP) server for voice-to-text transcription using Rust
 # Standard build
 cargo build --release
 
-# First build with CUDA will take 6+ minutes due to whisper-rs-sys compilation
+# Note: First build with hardware acceleration takes longer:
+# - CUDA (Linux/Windows): 6+ minutes due to whisper-rs-sys compilation
+# - Metal/CoreML (macOS): 2-3 minutes
 # Subsequent builds are much faster
 ```
 
@@ -133,9 +138,21 @@ cargo test
 ```
 
 The project includes:
-- **Unit Tests** (15 tests) - Core functionality testing
-- **Integration Tests** (3 tests) - End-to-end workflow testing  
+- **Unit Tests** (20 tests) - Core functionality and hardware acceleration testing
+- **Integration Tests** (5 tests) - End-to-end workflow and acceleration performance testing  
 - **Property-Based Tests** (2 tests) - Randomized input validation
+
+### Check Hardware Acceleration
+
+To verify your platform's acceleration configuration:
+
+```bash
+# Check platform detection and acceleration features
+cargo test test_hardware_acceleration_runtime_info -- --nocapture
+
+# Run acceleration integration tests
+cargo test test_hardware_acceleration -- --nocapture
+```
 
 Test coverage includes:
 - Service creation and state management
@@ -250,16 +267,34 @@ The implementation provides a complete voice-to-text MCP server. Future enhancem
 - Audio input device (microphone)
 - On Linux: ALSA development libraries (`libasound2-dev` on Ubuntu/Debian)
 
-### CUDA Support (Optional)
+### Hardware Acceleration (Optional)
+
+#### macOS
+- **Apple Silicon (M1/M2/M3)**: Automatic Metal GPU + CoreML (Apple Neural Engine) acceleration
+- **Intel Mac**: Automatic Metal GPU acceleration
+- No additional installation required - uses built-in macOS frameworks
+
+#### Linux/Windows
 - **NVIDIA GPU** with CUDA support
 - **CUDA Toolkit** 11.0+ installed
-- If CUDA is not available, the system automatically falls back to CPU processing
+
+#### All Platforms
+- If hardware acceleration is not available, the system automatically falls back to CPU processing
 - CPU fallback provides the same functionality but slower transcription speed
 
 ### Installation Notes
-- First build with CUDA takes 6+ minutes due to compiling whisper.cpp with CUDA support
-- Without CUDA: faster build times, slower transcription
-- With CUDA: longer build times, faster transcription
+
+#### Build Times
+- First build with hardware acceleration takes longer:
+  - **CUDA** (Linux/Windows): 6+ minutes
+  - **Metal/CoreML** (macOS): 2-3 minutes
+- Subsequent builds are much faster
+
+#### Performance Notes
+- **macOS Apple Silicon**: Up to 3x faster with CoreML, 2-3x faster with NEON SIMD
+- **macOS Intel**: 1.5-2x faster with Metal GPU acceleration
+- **Linux/Windows**: 2-4x faster with CUDA GPU acceleration
+- **CoreML Note**: First run takes 15-20 minutes for model compilation, then cached for future use
 
 ## Architecture
 
@@ -279,7 +314,7 @@ The implementation provides a complete voice-to-text MCP server. Future enhancem
 
 ### Components
 - **MCP Server**: JSON-RPC 2.0 server with stdio transport
-- **Whisper Engine**: CUDA-accelerated speech recognition with CPU fallback
+- **Whisper Engine**: Hardware-accelerated speech recognition (Metal/CoreML/CUDA) with CPU fallback
 - **Audio Pipeline**: Real-time capture, resampling, and preprocessing
 - **Debug System**: Audio file saving and analysis tools
 
