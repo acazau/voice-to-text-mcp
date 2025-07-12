@@ -2,13 +2,24 @@
 
 Transcribe audio from a WAV file to text using Whisper.
 
-**Usage:** `/transcribe [file_path]`
+**Usage:** `/transcribe_file file_path=<path>`
 
-**Arguments:**
-- `file_path` - Path to WAV audio file
+**Parameters:**
+- `file_path` - Path to audio file (WAV format recommended)
 
-**Example:**
-- `/transcribe debug/audio_20250710_194139_raw.wav`
-- `/transcribe recordings/meeting.wav`
+**Examples:**
+- `/transcribe_file file_path="debug/audio_20250710_194139_raw.wav"`
+- `/transcribe_file file_path="/path/to/meeting.wav"`
+- `/transcribe_file file_path="./recordings/interview.wav"`
 
-Uses the `transcribe_file` MCP tool to process audio files. Supports WAV format with automatic audio processing and normalization.
+**Supported Formats:**
+- WAV files (recommended)
+- Other formats supported by the underlying audio processing library
+
+**Technical Details:**
+- Processes audio through the VoiceToTextService
+- Automatically handles audio resampling and normalization
+- Supports the same hardware acceleration as live recording
+- Works with existing audio files from debug mode or external sources
+
+**Note:** File paths with spaces should be quoted. Relative paths are resolved from the current working directory.

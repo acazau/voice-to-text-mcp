@@ -1,31 +1,30 @@
-# Voice Recording Control
+# Voice Recording
 
-Control voice recording with start/stop/status/toggle functionality.
+Record audio and return transcribed text using Whisper.
 
-**Usage:** `/listen [command] [options]`
+**Usage:** `/listen [options]`
 
-**Commands:**
-- `start` - Begin recording (blocks until complete with auto-stop)
-- `stop` - End recording  
-- `status` - Check recording status
-- `toggle` - Switch recording state (non-blocking for backwards compatibility)
-- (empty) - Toggle recording state
+**Behavior:**
+- Records audio from your microphone
+- Automatically stops after silence or timeout
+- Returns transcribed text when complete
+- Blocks until recording is finished (within 30 seconds)
 
 **Optional Parameters:**
 - `timeout_ms` - Maximum recording duration in milliseconds (default: 30000)
-- `silence_timeout_ms` - Auto-stop after silence duration in milliseconds (default: 2000)
-- `auto_stop` - Enable automatic stopping on silence detection (default: true for start, false for toggle)
-- `enable_voice_commands` - Enable voice command recognition during recording
+- `silence_timeout_ms` - Auto-stop after silence duration in milliseconds (default: 2000)  
+- `auto_stop` - Enable automatic stopping on silence detection (default: true)
 
 **Examples:**
-- `/listen start` - Start recording with auto-stop (blocks until complete)
-- `/listen stop` - Stop recording
-- `/listen status` - Check if recording
-- `/listen` - Toggle recording on/off (non-blocking)
+- `/listen` - Record with default settings (30s max, 2s silence timeout)
+- `/listen timeout_ms=60000` - Record for up to 60 seconds
+- `/listen silence_timeout_ms=3000` - Wait 3 seconds of silence before stopping
+- `/listen auto_stop=false` - Disable auto-stop (record until timeout)
 
-**Blocking Behavior:**
-- `start` command now waits for voice input and returns transcription when complete
-- Uses voice activity detection to auto-stop after silence
-- `toggle` command maintains backwards compatibility with immediate return
+**Technical Details:**
+- Uses blocking MCP server architecture for reliability
+- Processes audio through unified `voice-to-text-mcp` binary
+- Requires Whisper model file for transcription
+- Supports hardware acceleration (Metal/CoreML/CUDA) when available
 
-Uses the `listen` MCP tool with configurable voice commands. See project README for custom command configuration.
+**Note:** This tool requires a microphone and Whisper model file to function properly.

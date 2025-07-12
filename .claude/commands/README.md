@@ -1,133 +1,113 @@
 # Voice Recording Commands for Claude Code
 
-This directory contains custom slash commands for easy voice recording and transcription within Claude Code.
+This directory contains custom slash commands for voice recording and transcription within Claude Code.
 
 ## Available Commands
 
 ### Voice Recording Commands
-- **`/listen [command]`** - Unified voice control (start/stop/status/toggle)
-- **`/transcribe [path]`** - Transcribe an existing WAV file
+- **`/listen`** - Record audio and return transcribed text (blocking)
+- **`/transcribe_file`** - Transcribe an existing audio file
 
 ## Quick Start
 
-1. **Start Recording:**
-   ```
-   /listen start
-   ```
-
-2. **Speak your message** (at least 1-2 seconds)
-
-3. **Stop Recording:**
-   ```
-   /listen stop
-   ```
-
-4. **Check Status anytime:**
-   ```
-   /listen status
-   ```
-
-5. **Toggle Recording:**
+1. **Record Audio:**
    ```
    /listen
    ```
+   *Speak your message, then wait for silence or timeout*
 
-## Workflow Example
+2. **Record with Custom Timeout:**
+   ```
+   /listen timeout_ms=60000
+   ```
 
+3. **Transcribe Existing File:**
+   ```
+   /transcribe_file file_path="debug/audio_20250710_194139_raw.wav"
+   ```
+
+## Command Examples
+
+### Basic Recording
 ```bash
-# Check if anything is recording
-/listen status
+# Record with default settings (30s max, 2s silence timeout)
+/listen
 
-# Start a new recording
-/listen start
+# Record for up to 60 seconds  
+/listen timeout_ms=60000
 
-# [Speak your message]
+# Wait 3 seconds of silence before stopping
+/listen silence_timeout_ms=3000
 
-# Stop and get transcription
-/listen stop
-
-# Transcribe an existing file
-/transcribe debug/audio_20250710_194139_raw.wav
+# Disable auto-stop (record until timeout)
+/listen auto_stop=false
 ```
+
+### File Transcription
+```bash
+# Transcribe a debug audio file
+/transcribe_file file_path="debug/audio_20250710_194139_raw.wav"
+
+# Transcribe external file
+/transcribe_file file_path="/path/to/meeting.wav"
+```
+
+## Architecture
+
+**Simplified Blocking Design:**
+- `/listen` calls `voice-recorder` binary which blocks until complete
+- Returns transcribed text when recording finishes
+- Process isolation ensures reliability
+- Natural 30-second timeout handling
+
+**Key Changes from Previous Version:**
+- No more start/stop/status commands - just simple `/listen`
+- Blocking operation returns final transcription
+- Uses separate `voice-recorder` binary for actual recording
 
 ## Prerequisites
 
-- Voice-to-text MCP server must be running
+- Voice-to-text MCP server running with model file
 - Microphone access enabled
-- Whisper model loaded for actual transcription
-- MCP server configured in `.mcp.json`
+- Whisper model file (e.g., `ggml-base.en.bin`)
+- MCP server configured in Claude Desktop settings
+
+## Configuration
+
+Add to your Claude Desktop configuration:
+
+```json
+{
+  "mcpServers": {
+    "voice-to-text": {
+      "command": "/path/to/target/release/voice-to-text-mcp",
+      "args": ["--mcp-server", "/path/to/ggml-base.en.bin"]
+    }
+  }
+}
+```
 
 ## Troubleshooting
 
 **Commands not appearing?**
-- Restart Claude Code session
-- Check that `.claude/commands/` directory exists
-- Verify MCP server is running
+- Restart Claude Desktop
+- Check MCP server is configured correctly
+- Verify binary paths are correct
 
 **Recording not working?**
 - Check microphone permissions
-- Test with `/listen status` first to check status
-- Ensure MCP server is connected
+- Ensure Whisper model file exists
+- Check MCP server logs
 
-**Poor transcription quality?**
-- Speak clearly and at normal volume
+**No transcription returned?**
+- Speak clearly for at least 1-2 seconds
 - Minimize background noise
-- Record for at least 1-2 seconds
-- Check audio levels with `/recording-status`
-
-## Command Customization
-
-You can customize voice commands via CLI arguments in your `.mcp.json` configuration or environment variables:
-
-### MCP Configuration with Custom Commands
-Edit your `.mcp.json` file:
-```json
-{
-  "mcpServers": {
-    "voice-to-text": {
-      "command": "./target/release/voice-to-text-mcp",
-      "args": [
-        "--mcp-server", 
-        "models/ggml-base.en.bin",
-        "--start-commands", "go,begin,record",
-        "--stop-commands", "halt,finish,done",
-        "--status-commands", "check,info"
-      ]
-    }
-  }
-}
-```
-
-### Environment Variables (Fallback)
-```bash
-export VOICE_START_COMMANDS="start,begin,go"
-export VOICE_STOP_COMMANDS="stop,end,done"
-export VOICE_STATUS_COMMANDS="status,check,info"
-export VOICE_TOGGLE_COMMANDS="toggle,switch,"
-```
-
-### Multilingual Support
-Example for Spanish/French commands in `.mcp.json`:
-```json
-{
-  "mcpServers": {
-    "voice-to-text": {
-      "command": "./target/release/voice-to-text-mcp",
-      "args": [
-        "--mcp-server", "models/ggml-base.en.bin",
-        "--start-commands", "start,iniciar,commencer",
-        "--stop-commands", "stop,parar,arrêter",
-        "--status-commands", "status,estado,statut"
-      ]
-    }
-  }
-}
-```
+- Check if model file is loading correctly
 
 ## Technical Details
 
-- Audio captured at 44.1kHz, processed to 16kHz for Whisper
-- Supports mono/stereo microphones (converted to mono)
-- Uses CUDA acceleration when available, CPU fallback
-- Debug audio files saved to `debug/` directory when enabled
-- Commands are case-insensitive and whitespace-tolerant
+- **Audio Processing**: 44.1kHz → 16kHz mono for Whisper
+- **Hardware Acceleration**: Metal/CoreML (macOS), CUDA (Linux/Windows)
+- **Timeout**: Natural 30-second maximum per recording
+- **Format Support**: WAV files for transcription
+- **Debug Mode**: Set `VOICE_DEBUG=true` to save audio files

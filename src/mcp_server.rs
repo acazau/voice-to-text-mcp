@@ -11,7 +11,7 @@ use anyhow::Result;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-use crate::{VoiceToTextService, CommandConfig, CommandType};
+use crate::VoiceToTextService;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct TranscribeFileRequest {
@@ -21,10 +21,6 @@ pub struct TranscribeFileRequest {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ListenRequest {
-    #[schemars(description = "Command: 'start', 'stop', 'status', or empty for toggle")]
-    pub command: Option<String>,
-    #[schemars(description = "Enable voice command recognition for this session")]
-    pub enable_voice_commands: Option<bool>,
     #[schemars(description = "Maximum recording duration in milliseconds (default: 30000)")]
     pub timeout_ms: Option<u64>,
     #[schemars(description = "Silence duration in milliseconds before auto-stop (default: 2000)")]
@@ -37,25 +33,19 @@ pub struct ListenRequest {
 pub struct VoiceToTextMcpServer {
     tool_router: ToolRouter<Self>,
     service: Arc<Mutex<VoiceToTextService>>,
-    command_config: CommandConfig,
 }
 
 #[tool_router]
 impl VoiceToTextMcpServer {
     pub fn new(service: VoiceToTextService) -> Self {
-        Self::new_with_config(service, CommandConfig::default())
-    }
-
-    pub fn new_with_config(service: VoiceToTextService, command_config: CommandConfig) -> Self {
         Self {
             tool_router: Self::tool_router(),
             service: Arc::new(Mutex::new(service)),
-            command_config,
         }
     }
     
     #[tool(description = "Transcribe an audio file to text using Whisper")]
-    async fn transcribe_file(
+    pub async fn transcribe_file(
         &self,
         Parameters(TranscribeFileRequest { file_path }): Parameters<TranscribeFileRequest>,
     ) -> String {
@@ -69,69 +59,37 @@ impl VoiceToTextMcpServer {
     #[tool(description = "Voice recording control: configurable commands for start/stop/status/toggle")]
     pub async fn listen(
         &self,
-        Parameters(ListenRequest { command, enable_voice_commands, timeout_ms, silence_timeout_ms, auto_stop }): Parameters<ListenRequest>,
+        Parameters(ListenRequest { timeout_ms, silence_timeout_ms, auto_stop }): Parameters<ListenRequest>,
     ) -> String {
-        let mut service = self.service.lock().await;
-        
-        // Update voice command setting if provided
-        if let Some(voice_enabled) = enable_voice_commands {
-            service.set_voice_commands_enabled(voice_enabled);
+        // Get parameters with defaults
+        let timeout = timeout_ms.unwrap_or(30000);
+        let silence_timeout = silence_timeout_ms.unwrap_or(2000);
+        let auto_stop_enabled = auto_stop.unwrap_or(true);
+
+        // Log the operation for debugging (only in debug mode)
+        let debug_enabled = {
+            let service = self.service.lock().await;
+            service.get_debug_config().enabled
+        };
+        if debug_enabled {
+            eprintln!("🎤 MCP: Starting voice recording with timeout: {}ms, silence_timeout: {}ms, auto_stop: {}", 
+                     timeout, silence_timeout, auto_stop_enabled);
         }
-        
-        let cmd = command.as_deref().unwrap_or("");
-        
-        match self.command_config.match_command(cmd) {
-            Some(CommandType::Start) => {
-                let timeout = timeout_ms.unwrap_or(30000);
-                let silence_timeout = silence_timeout_ms.unwrap_or(2000);
-                // For explicit start commands, default auto_stop to true (blocking behavior)
-                let auto_stop_enabled = auto_stop.unwrap_or(true);
-                
-                match service.start_listening_with_options(timeout, silence_timeout, auto_stop_enabled).await {
-                    Ok(message) => message,
-                    Err(e) => format!("Error: {}", e),
+
+        // Use the VoiceToTextService directly instead of subprocess
+        let service = self.service.lock().await;
+        match service.start_listening_with_options(timeout, silence_timeout, auto_stop_enabled).await {
+            Ok(result) => {
+                if debug_enabled {
+                    eprintln!("🎤 MCP: Recording completed successfully");
                 }
-            },
-            Some(CommandType::Stop) => {
-                match service.stop_listening().await {
-                    Ok(text) => text,
-                    Err(e) => format!("Error: {}", e),
+                result
+            }
+            Err(e) => {
+                if debug_enabled {
+                    eprintln!("🎤 MCP: Recording failed: {}", e);
                 }
-            },
-            Some(CommandType::Status) => {
-                format!("Recording: {}, Samples: {}, Voice Commands: {}", 
-                        service.is_recording(), 
-                        service.get_audio_sample_count(),
-                        if service.is_voice_commands_enabled() { "enabled" } else { "disabled" })
-            },
-            Some(CommandType::Toggle) => {
-                // Toggle behavior
-                if service.is_recording() {
-                    match service.stop_listening().await {
-                        Ok(text) => text,
-                        Err(e) => format!("Error: {}", e),
-                    }
-                } else {
-                    let timeout = timeout_ms.unwrap_or(30000);
-                    let silence_timeout = silence_timeout_ms.unwrap_or(2000);
-                    // For toggle commands, default auto_stop to false for backwards compatibility
-                    let auto_stop_enabled = auto_stop.unwrap_or(false);
-                    
-                    match service.start_listening_with_options(timeout, silence_timeout, auto_stop_enabled).await {
-                        Ok(message) => message,
-                        Err(e) => format!("Error: {}", e),
-                    }
-                }
-            },
-            None => {
-                let available_commands = format!(
-                    "Available commands:\n- Start: {}\n- Stop: {}\n- Status: {}\n- Toggle: {}",
-                    self.command_config.start_commands.join(", "),
-                    self.command_config.stop_commands.join(", "),
-                    self.command_config.status_commands.join(", "),
-                    self.command_config.toggle_commands.join(", ")
-                );
-                format!("Unknown command: '{}'. {}", cmd, available_commands)
+                format!("Error: {}", e)
             }
         }
     }
@@ -175,17 +133,6 @@ impl ServerHandler for VoiceToTextMcpServer {
                 Ok(CallToolResult::success(vec![Content::text(result)]))
             },
             "listen" => {
-                let command = request.arguments
-                    .as_ref()
-                    .and_then(|args| args.get("command"))
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string());
-                
-                let enable_voice_commands = request.arguments
-                    .as_ref()
-                    .and_then(|args| args.get("enable_voice_commands"))
-                    .and_then(|v| v.as_bool());
-                
                 let timeout_ms = request.arguments
                     .as_ref()
                     .and_then(|args| args.get("timeout_ms"))
@@ -202,7 +149,7 @@ impl ServerHandler for VoiceToTextMcpServer {
                     .and_then(|v| v.as_bool());
                 
                 let result = self.listen(
-                    Parameters(ListenRequest { command, enable_voice_commands, timeout_ms, silence_timeout_ms, auto_stop })
+                    Parameters(ListenRequest { timeout_ms, silence_timeout_ms, auto_stop })
                 ).await;
                 Ok(CallToolResult::success(vec![Content::text(result)]))
             },
@@ -211,10 +158,12 @@ impl ServerHandler for VoiceToTextMcpServer {
     }
 }
 
-pub async fn run_mcp_server(service: VoiceToTextService, command_config: CommandConfig) -> Result<()> {
-    eprintln!("Voice-to-Text MCP Server started with rmcp 0.2.1");
+pub async fn run_mcp_server(service: VoiceToTextService) -> Result<()> {
+    if service.get_debug_config().enabled {
+        eprintln!("Voice-to-Text MCP Server started with rmcp 0.2.1");
+    }
     
-    let server = VoiceToTextMcpServer::new_with_config(service, command_config);
+    let server = VoiceToTextMcpServer::new(service);
     
     // Create stdio transport
     let transport = (tokio::io::stdin(), tokio::io::stdout());

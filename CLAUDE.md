@@ -6,21 +6,22 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 This is a **Voice-to-Text MCP Server** that provides speech-to-text transcription capabilities via the Model Context Protocol (MCP). The project has two operational modes:
 
-1. **MCP Server Mode**: JSON-RPC 2.0 compliant server for integration with MCP clients
-2. **Interactive CLI Mode**: Command-line interface for testing and development
+1. **MCP Server Mode**: JSON-RPC 2.0 compliant server for integration with MCP clients (with `--mcp-server` flag)
+2. **Blocking Recording Mode**: Simple command-line tool that records audio and returns transcription (default behavior)
 
 ## Core Architecture
 
 ### Key Components
 
-- **`VoiceToTextService`** (`src/lib.rs`): Core service handling audio capture, processing, and Whisper transcription
-- **`VoiceToTextMcpServer`** (`src/mcp_server.rs`): MCP protocol implementation with JSON-RPC message handling
-- **`main.rs`**: CLI argument parsing and application entry point with dual-mode support
+- **`voice-to-text-mcp`** (`src/main.rs`): Unified binary with MCP server and interactive CLI modes
+- **`VoiceToTextService`** (`src/lib.rs`): Core service handling audio capture, processing, and Whisper transcription  
+- **`VoiceToTextMcpServer`** (`src/mcp_server.rs`): MCP protocol implementation using VoiceToTextService directly
 
 ### Critical Design Patterns
 
-- **Thread-Safe State Management**: Uses `Arc<AtomicBool>` for recording state and `Arc<Mutex<Vec<f32>>>` for audio data
-- **Async/Await Throughout**: All audio operations and transcription are async
+- **Unified Binary Architecture**: Single binary handles both MCP server and CLI modes with consistent behavior
+- **Direct Service Integration**: MCP server uses VoiceToTextService directly (no subprocess calls)
+- **Configurable Timeouts**: Both CLI and MCP modes support `--timeout-ms` and `--silence-timeout-ms` parameters
 - **Hardware Acceleration**: Platform-specific acceleration with automatic CPU fallback
   - **macOS Apple Silicon**: Metal GPU + CoreML (Apple Neural Engine)
   - **macOS Intel**: Metal GPU acceleration
@@ -71,25 +72,22 @@ cargo test --test property_tests
 
 #### MCP Server Mode
 ```bash
-# With Whisper model
+# With Whisper model (required for recording)
 ./target/release/voice-to-text-mcp --mcp-server ggml-base.en.bin
-
-# Without model (placeholder mode)
-./target/release/voice-to-text-mcp --mcp-server
 ```
 
-#### Interactive CLI Mode
+#### Blocking Voice Recording Mode (Default)
 ```bash
-# With model
-./target/release/voice-to-text-mcp ggml-base.en.bin
+# Simple blocking recording with custom timeouts
+./target/release/voice-to-text-mcp --timeout-ms 10000 --silence-timeout-ms 1000 ggml-base.en.bin
 
 # With debug mode
-./target/release/voice-to-text-mcp --debug ggml-base.en.bin
+./target/release/voice-to-text-mcp --debug --timeout-ms 5000 ggml-base.en.bin
 
-# Test existing WAV file
-./target/release/voice-to-text-mcp ggml-base.en.bin
-# Then use: test debug/audio_20250710_194139_raw.wav
+# Disable auto-stop (record for full timeout)
+./target/release/voice-to-text-mcp --no-auto-stop --timeout-ms 5000 ggml-base.en.bin
 ```
+
 
 ### Development Workflow
 
@@ -112,37 +110,46 @@ VOICE_DEBUG=true ./target/release/voice-to-text-mcp ggml-base.en.bin
 ## MCP Protocol Implementation
 
 The server implements these MCP tools:
-- `transcribe_file`: Process WAV files
-- `listen`: Unified voice control with configurable commands (start/stop/status/toggle)
+- `transcribe_file`: Process existing WAV files
+- `listen`: Record audio and return transcribed text (blocking operation)
 
-### Voice Command Configuration
+**Key Changes:**
+- Simplified to single `listen` tool (no more start/stop/status commands)  
+- Blocking operation - returns transcribed text when recording complete
+- Uses VoiceToTextService directly (no subprocess calls)
+- Configurable timeout handling via MCP parameters
 
-Commands are configurable via CLI arguments or environment variables:
+### Keyboard Controls
 
-**Configuration Priority:**
-1. CLI arguments (highest priority)
-2. Environment variables (`VOICE_START_COMMANDS`, etc.)
-3. Default commands
+The server supports keyboard shortcuts for controlling recording in interactive CLI mode. **Note**: Keyboard controls are disabled in MCP server mode since stdin/stdout are reserved for MCP protocol communication.
 
-**Default Commands:**
-- Start: `start`, `begin`, `record`
-- Stop: `stop`, `end`, `finish`
-- Status: `status`, `check`, `info`
-- Toggle: `toggle`, `switch`, `""` (empty)
+**Default Keyboard Shortcuts:**
+- **Ctrl+R**: Start recording
+- **Ctrl+S**: Stop recording  
+- **Space**: Toggle recording (start if stopped, stop if recording)
+- **Ctrl+I**: Show status information
+- **Esc**: Exit keyboard controls
 
-**Example CLI Configuration:**
+**Configuration Options:**
 ```bash
-# Custom commands
-./target/release/voice-to-text-mcp --mcp-server models/ggml-base.en.bin \
-  --start-commands "go,record,iniciar" \
-  --stop-commands "halt,done,parar" \
-  --status-commands "info,estado"
+# Enable keyboard controls
+./target/release/voice-to-text-mcp --keyboard-controls ggml-base.en.bin
 
-# Environment variable fallback
-export VOICE_START_COMMANDS="go,record"
-export VOICE_STOP_COMMANDS="halt,done"
-./target/release/voice-to-text-mcp --mcp-server models/ggml-base.en.bin
+# Custom key bindings
+./target/release/voice-to-text-mcp --keyboard-controls \
+  --keyboard-start-key "r" \
+  --keyboard-stop-key "s" \
+  --keyboard-toggle-key " " \
+  --keyboard-status-key "i" \
+  ggml-base.en.bin
+
+# Disable Ctrl modifier requirement (except for toggle key)
+./target/release/voice-to-text-mcp --keyboard-controls --keyboard-no-ctrl ggml-base.en.bin
 ```
+
+**Environment Variables:**
+- `KEYBOARD_CONTROLS_ENABLED=true` - Enable keyboard controls
+- Works alongside all other voice and debug configurations
 
 ### MCP Message Flow
 1. Client sends JSON-RPC requests via stdio

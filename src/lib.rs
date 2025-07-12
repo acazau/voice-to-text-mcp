@@ -1,6 +1,5 @@
 use std::sync::{Arc, Mutex};
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
-use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, Ordering};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use anyhow::Result;
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
@@ -10,6 +9,23 @@ use std::fs;
 use chrono::Utc;
 
 pub mod mcp_server;
+
+// Conditional logging macros
+macro_rules! debug_println {
+    ($debug_enabled:expr, $($arg:tt)*) => {
+        if $debug_enabled {
+            println!($($arg)*);
+        }
+    };
+}
+
+macro_rules! debug_eprintln {
+    ($debug_enabled:expr, $($arg:tt)*) => {
+        if $debug_enabled {
+            eprintln!($($arg)*);
+        }
+    };
+}
 
 #[derive(Clone, Debug)]
 pub struct CommandConfig {
@@ -106,26 +122,6 @@ pub enum CommandType {
     Toggle,
 }
 
-impl CommandType {
-    fn to_u8(&self) -> u8 {
-        match self {
-            CommandType::Start => 1,
-            CommandType::Stop => 2,
-            CommandType::Status => 3,
-            CommandType::Toggle => 4,
-        }
-    }
-
-    fn from_u8(value: u8) -> Option<Self> {
-        match value {
-            1 => Some(CommandType::Start),
-            2 => Some(CommandType::Stop),
-            3 => Some(CommandType::Status),
-            4 => Some(CommandType::Toggle),
-            _ => None,
-        }
-    }
-}
 
 #[derive(Clone, Debug)]
 pub struct DebugConfig {
@@ -135,23 +131,26 @@ pub struct DebugConfig {
     pub save_processed: bool,
 }
 
+
 #[derive(Clone, Debug)]
-pub struct VoiceCommandConfig {
+pub struct KeyboardConfig {
     pub enabled: bool,
-    pub chunk_duration_ms: u64,
-    pub detection_sensitivity: f32,
-    pub include_in_final_transcription: bool,
-    pub command_config: CommandConfig,
+    pub start_key: char,
+    pub stop_key: char,
+    pub toggle_key: char,
+    pub status_key: char,
+    pub enable_ctrl_modifier: bool,
 }
 
-impl Default for VoiceCommandConfig {
+impl Default for KeyboardConfig {
     fn default() -> Self {
         Self {
-            enabled: true,
-            chunk_duration_ms: 500,
-            detection_sensitivity: 0.7,
-            include_in_final_transcription: false,
-            command_config: CommandConfig::default(),
+            enabled: false,
+            start_key: 'r',        // Ctrl+R to start recording
+            stop_key: 's',         // Ctrl+S to stop recording
+            toggle_key: ' ',       // Space to toggle (no modifier needed)
+            status_key: 'i',       // Ctrl+I for status/info
+            enable_ctrl_modifier: true,
         }
     }
 }
@@ -173,13 +172,8 @@ pub struct VoiceToTextService {
     audio_data: Arc<Mutex<Vec<f32>>>,
     whisper_context: Arc<tokio::sync::Mutex<Option<WhisperContext>>>,
     debug_config: DebugConfig,
-    voice_command_config: VoiceCommandConfig,
-    voice_command_detected: Arc<AtomicBool>,
-    partial_transcription_buffer: Arc<Mutex<String>>,
-    last_chunk_time: Arc<Mutex<Option<std::time::Instant>>>,
+    keyboard_config: KeyboardConfig,
     audio_stream: Arc<Mutex<Option<cpal::Stream>>>,
-    command_queue: Arc<Mutex<VecDeque<CommandType>>>,
-    last_command: Arc<AtomicU8>,
 }
 
 impl VoiceToTextService {
@@ -188,22 +182,17 @@ impl VoiceToTextService {
     }
 
     pub fn new_with_debug(debug_config: DebugConfig) -> Self {
-        Self::new_with_configs(debug_config, VoiceCommandConfig::default())
+        Self::new_with_keyboard(debug_config, KeyboardConfig::default())
     }
 
-    pub fn new_with_configs(debug_config: DebugConfig, voice_command_config: VoiceCommandConfig) -> Self {
+    pub fn new_with_keyboard(debug_config: DebugConfig, keyboard_config: KeyboardConfig) -> Self {
         Self {
             is_recording: Arc::new(AtomicBool::new(false)),
             audio_data: Arc::new(Mutex::new(Vec::new())),
             whisper_context: Arc::new(tokio::sync::Mutex::new(None)),
             debug_config,
-            voice_command_config,
-            voice_command_detected: Arc::new(AtomicBool::new(false)),
-            partial_transcription_buffer: Arc::new(Mutex::new(String::new())),
-            last_chunk_time: Arc::new(Mutex::new(None)),
+            keyboard_config,
             audio_stream: Arc::new(Mutex::new(None)),
-            command_queue: Arc::new(Mutex::new(VecDeque::new())),
-            last_command: Arc::new(AtomicU8::new(0)),
         }
     }
 
@@ -212,47 +201,201 @@ impl VoiceToTextService {
     }
 
     pub fn new_with_model_and_debug(model_path: &str, debug_config: DebugConfig) -> Result<Self> {
-        Self::new_with_model_and_configs(model_path, debug_config, VoiceCommandConfig::default())
+        Self::new_with_model_and_keyboard(model_path, debug_config, KeyboardConfig::default())
     }
 
-    pub fn new_with_model_and_configs(model_path: &str, debug_config: DebugConfig, voice_command_config: VoiceCommandConfig) -> Result<Self> {
+    pub fn new_with_model_and_keyboard(model_path: &str, debug_config: DebugConfig, keyboard_config: KeyboardConfig) -> Result<Self> {
         // Log hardware acceleration status
-        Self::log_acceleration_status();
+        Self::log_acceleration_status(debug_config.enabled);
         
-        let ctx = WhisperContext::new_with_params(
-            model_path,
-            WhisperContextParameters::default(),
-        )?;
+        let ctx = if debug_config.enabled {
+            // In debug mode, show all logs
+            WhisperContext::new_with_params(
+                model_path,
+                WhisperContextParameters::default(),
+            )?
+        } else {
+            // In non-debug mode, suppress whisper.cpp logs
+            Self::load_whisper_quietly(model_path)?
+        };
         
         Ok(Self {
             is_recording: Arc::new(AtomicBool::new(false)),
             audio_data: Arc::new(Mutex::new(Vec::new())),
             whisper_context: Arc::new(tokio::sync::Mutex::new(Some(ctx))),
             debug_config,
-            voice_command_config,
-            voice_command_detected: Arc::new(AtomicBool::new(false)),
-            partial_transcription_buffer: Arc::new(Mutex::new(String::new())),
-            last_chunk_time: Arc::new(Mutex::new(None)),
+            keyboard_config,
             audio_stream: Arc::new(Mutex::new(None)),
-            command_queue: Arc::new(Mutex::new(VecDeque::new())),
-            last_command: Arc::new(AtomicU8::new(0)),
         })
     }
     
-    fn log_acceleration_status() {
-        println!("Initializing Whisper with hardware acceleration:");
+    #[cfg(unix)]
+    fn load_whisper_quietly(model_path: &str) -> Result<WhisperContext> {
+        use std::fs::OpenOptions;
+        use std::os::unix::io::AsRawFd;
+        
+        // Save original stderr
+        let original_stderr = unsafe { libc::dup(libc::STDERR_FILENO) };
+        if original_stderr < 0 {
+            // If we can't duplicate stderr, just load normally
+            return WhisperContext::new_with_params(
+                model_path,
+                WhisperContextParameters::default(),
+            ).map_err(Into::into);
+        }
+        
+        // Redirect stderr to /dev/null
+        let devnull_result = OpenOptions::new().write(true).open("/dev/null");
+        let ctx_result = if let Ok(devnull) = devnull_result {
+            unsafe {
+                libc::dup2(devnull.as_raw_fd(), libc::STDERR_FILENO);
+            }
+            
+            // Load the model (this will be quiet now)
+            let result = WhisperContext::new_with_params(
+                model_path,
+                WhisperContextParameters::default(),
+            );
+            
+            // Restore original stderr
+            unsafe {
+                libc::dup2(original_stderr, libc::STDERR_FILENO);
+            }
+            
+            result
+        } else {
+            // If we can't open /dev/null, just load normally
+            WhisperContext::new_with_params(
+                model_path,
+                WhisperContextParameters::default(),
+            )
+        };
+        
+        // Clean up
+        unsafe {
+            libc::close(original_stderr);
+        }
+        
+        ctx_result.map_err(Into::into)
+    }
+
+    #[cfg(not(unix))]
+    fn load_whisper_quietly(model_path: &str) -> Result<WhisperContext> {
+        // On non-Unix systems, just load normally for now
+        WhisperContext::new_with_params(
+            model_path,
+            WhisperContextParameters::default(),
+        ).map_err(Into::into)
+    }
+
+    #[cfg(unix)]
+    fn run_transcription_quietly(state: &mut whisper_rs::WhisperState, params: whisper_rs::FullParams, audio_data: &[f32]) -> Result<()> {
+        use std::fs::OpenOptions;
+        use std::os::unix::io::AsRawFd;
+        
+        // Save original stderr
+        let original_stderr = unsafe { libc::dup(libc::STDERR_FILENO) };
+        if original_stderr < 0 {
+            // If we can't duplicate stderr, just run normally
+            return state.full(params, audio_data).map(|_| ()).map_err(Into::into);
+        }
+        
+        // Redirect stderr to /dev/null
+        let devnull_result = OpenOptions::new().write(true).open("/dev/null");
+        let result = if let Ok(devnull) = devnull_result {
+            unsafe {
+                libc::dup2(devnull.as_raw_fd(), libc::STDERR_FILENO);
+            }
+            
+            // Run transcription quietly
+            let transcription_result = state.full(params, audio_data);
+            
+            // Restore original stderr
+            unsafe {
+                libc::dup2(original_stderr, libc::STDERR_FILENO);
+            }
+            
+            transcription_result
+        } else {
+            // If we can't open /dev/null, just run normally
+            state.full(params, audio_data)
+        };
+        
+        // Clean up
+        unsafe {
+            libc::close(original_stderr);
+        }
+        
+        result.map(|_| ()).map_err(Into::into)
+    }
+
+    #[cfg(not(unix))]
+    fn run_transcription_quietly(state: &mut whisper_rs::WhisperState, params: whisper_rs::FullParams, audio_data: &[f32]) -> Result<()> {
+        // On non-Unix systems, just run normally for now
+        state.full(params, audio_data).map(|_| ()).map_err(Into::into)
+    }
+
+    #[cfg(unix)]
+    fn create_state_quietly(ctx: &WhisperContext) -> Result<whisper_rs::WhisperState> {
+        use std::fs::OpenOptions;
+        use std::os::unix::io::AsRawFd;
+        
+        // Save original stderr
+        let original_stderr = unsafe { libc::dup(libc::STDERR_FILENO) };
+        if original_stderr < 0 {
+            // If we can't duplicate stderr, just create normally
+            return ctx.create_state().map_err(Into::into);
+        }
+        
+        // Redirect stderr to /dev/null
+        let devnull_result = OpenOptions::new().write(true).open("/dev/null");
+        let result = if let Ok(devnull) = devnull_result {
+            unsafe {
+                libc::dup2(devnull.as_raw_fd(), libc::STDERR_FILENO);
+            }
+            
+            // Create state quietly
+            let state_result = ctx.create_state();
+            
+            // Restore original stderr
+            unsafe {
+                libc::dup2(original_stderr, libc::STDERR_FILENO);
+            }
+            
+            state_result
+        } else {
+            // If we can't open /dev/null, just create normally
+            ctx.create_state()
+        };
+        
+        // Clean up
+        unsafe {
+            libc::close(original_stderr);
+        }
+        
+        result.map_err(Into::into)
+    }
+
+    #[cfg(not(unix))]
+    fn create_state_quietly(ctx: &WhisperContext) -> Result<whisper_rs::WhisperState> {
+        // On non-Unix systems, just create normally for now
+        ctx.create_state().map_err(Into::into)
+    }
+
+    fn log_acceleration_status(debug_enabled: bool) {
+        debug_println!(debug_enabled, "Initializing Whisper with hardware acceleration:");
         
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-        println!("  Platform: macOS Apple Silicon (Metal + CoreML enabled)");
+        debug_println!(debug_enabled, "  Platform: macOS Apple Silicon (Metal + CoreML enabled)");
         
         #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
-        println!("  Platform: macOS Intel (Metal enabled)");
+        debug_println!(debug_enabled, "  Platform: macOS Intel (Metal enabled)");
         
         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-        println!("  Platform: Linux x86_64 (CUDA enabled)");
+        debug_println!(debug_enabled, "  Platform: Linux x86_64 (CUDA enabled)");
         
         #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-        println!("  Platform: Windows x86_64 (CUDA enabled)");
+        debug_println!(debug_enabled, "  Platform: Windows x86_64 (CUDA enabled)");
         
         #[cfg(not(any(
             all(target_os = "macos", target_arch = "aarch64"),
@@ -260,7 +403,7 @@ impl VoiceToTextService {
             all(target_os = "linux", target_arch = "x86_64"),
             all(target_os = "windows", target_arch = "x86_64")
         )))]
-        println!("  Platform: No hardware acceleration (CPU-only mode)");
+        debug_println!(debug_enabled, "  Platform: No hardware acceleration (CPU-only mode)");
     }
 
     pub async fn start_listening(&self) -> Result<String> {
@@ -270,22 +413,16 @@ impl VoiceToTextService {
 
         self.is_recording.store(true, Ordering::Relaxed);
         
-        // Clear previous audio data and voice command state
+        // Clear previous audio data
         {
             let mut data = self.audio_data.lock().unwrap();
             data.clear();
         }
-        
-        self.reset_voice_command_detection();
 
-        // Start audio capture with voice command monitoring
-        self.start_audio_capture_with_voice_commands().await?;
+        // Start audio capture
+        self.start_audio_capture().await?;
 
-        if self.voice_command_config.enabled {
-            Ok("Started listening with voice commands enabled...".to_string())
-        } else {
-            Ok("Started listening...".to_string())
-        }
+        Ok("Started listening...".to_string())
     }
 
     pub async fn start_listening_with_options(&self, timeout_ms: u64, silence_timeout_ms: u64, auto_stop: bool) -> Result<String> {
@@ -293,28 +430,30 @@ impl VoiceToTextService {
             return Ok("Already recording".to_string());
         }
 
+        // Check if we have a Whisper model loaded
+        {
+            let whisper_ctx = self.whisper_context.lock().await;
+            if whisper_ctx.is_none() {
+                return Err(anyhow::anyhow!("No model path configured"));
+            }
+        }
+
         self.is_recording.store(true, Ordering::Relaxed);
         
-        // Clear previous audio data and voice command state
+        // Clear previous audio data
         {
             let mut data = self.audio_data.lock().unwrap();
             data.clear();
         }
-        
-        self.reset_voice_command_detection();
 
-        // Start audio capture with voice command monitoring
-        self.start_audio_capture_with_voice_commands().await?;
+        // Start audio capture
+        self.start_audio_capture().await?;
 
         if auto_stop {
             // Start the auto-stop monitoring with voice activity detection
             return self.listen_with_auto_stop(timeout_ms, silence_timeout_ms).await;
         } else {
-            if self.voice_command_config.enabled {
-                Ok("Started listening with voice commands enabled...".to_string())
-            } else {
-                Ok("Started listening...".to_string())
-            }
+            Ok("Started listening...".to_string())
         }
     }
 
@@ -340,33 +479,11 @@ impl VoiceToTextService {
         // Save raw audio for debugging if enabled
         if self.debug_config.enabled && self.debug_config.save_raw {
             if let Err(e) = self.save_audio_debug(&audio_data, "raw", 44100) {
-                eprintln!("Warning: Failed to save raw audio debug file: {}", e);
+                debug_eprintln!(self.debug_config.enabled, "Warning: Failed to save raw audio debug file: {}", e);
             }
         }
 
-        let mut transcription = self.transcribe_audio(audio_data).await?;
-        
-        // Handle voice command transcription inclusion/exclusion
-        if self.voice_command_config.enabled {
-            let partial_buffer = {
-                let buffer = self.partial_transcription_buffer.lock().unwrap();
-                buffer.clone()
-            };
-            
-            if !self.voice_command_config.include_in_final_transcription && !partial_buffer.trim().is_empty() {
-                // Remove detected voice commands from the transcription
-                transcription = self.remove_voice_commands_from_transcription(&transcription, &partial_buffer);
-            }
-            
-            if self.voice_command_detected() {
-                let status = if self.voice_command_config.include_in_final_transcription {
-                    "(voice command executed and included in transcription)"
-                } else {
-                    "(voice command executed and excluded from transcription)"
-                };
-                transcription = format!("{} {}", transcription, status);
-            }
-        }
+        let transcription = self.transcribe_audio(audio_data).await?;
         
         Ok(transcription)
     }
@@ -379,55 +496,23 @@ impl VoiceToTextService {
         self.audio_data.lock().unwrap().len()
     }
 
-    pub fn set_voice_commands_enabled(&mut self, enabled: bool) {
-        self.voice_command_config.enabled = enabled;
+
+    // Keyboard control methods
+    pub fn set_keyboard_enabled(&mut self, enabled: bool) {
+        self.keyboard_config.enabled = enabled;
     }
 
-    pub fn is_voice_commands_enabled(&self) -> bool {
-        self.voice_command_config.enabled
+    pub fn is_keyboard_enabled(&self) -> bool {
+        self.keyboard_config.enabled
     }
 
-    pub fn get_voice_command_config(&self) -> &VoiceCommandConfig {
-        &self.voice_command_config
+    pub fn get_keyboard_config(&self) -> &KeyboardConfig {
+        &self.keyboard_config
     }
 
-    pub fn voice_command_detected(&self) -> bool {
-        self.voice_command_detected.load(Ordering::Relaxed)
+    pub fn set_keyboard_config(&mut self, config: KeyboardConfig) {
+        self.keyboard_config = config;
     }
-
-    pub fn reset_voice_command_detection(&self) {
-        self.voice_command_detected.store(false, Ordering::Relaxed);
-        let mut buffer = self.partial_transcription_buffer.lock().unwrap();
-        buffer.clear();
-        // Also clear the command queue and last command
-        let mut queue = self.command_queue.lock().unwrap();
-        queue.clear();
-        self.clear_last_command();
-    }
-
-    pub fn get_command_queue_size(&self) -> usize {
-        let queue = self.command_queue.lock().unwrap();
-        queue.len()
-    }
-
-    pub fn pop_next_command(&self) -> Option<CommandType> {
-        let mut queue = self.command_queue.lock().unwrap();
-        queue.pop_front()
-    }
-
-    pub fn get_last_command(&self) -> Option<CommandType> {
-        let value = self.last_command.load(Ordering::Relaxed);
-        CommandType::from_u8(value)
-    }
-
-    pub fn set_last_command(&self, command: CommandType) {
-        self.last_command.store(command.to_u8(), Ordering::Relaxed);
-    }
-
-    pub fn clear_last_command(&self) {
-        self.last_command.store(0, Ordering::Relaxed);
-    }
-
 
     pub async fn transcribe_audio(&self, audio_data: Vec<f32>) -> Result<String> {
         if audio_data.is_empty() {
@@ -445,7 +530,7 @@ impl VoiceToTextService {
             // Save processed audio for debugging if enabled
             if self.debug_config.enabled && self.debug_config.save_processed {
                 if let Err(e) = self.save_audio_debug(&processed_audio, "processed", 16000) {
-                    eprintln!("Warning: Failed to save processed audio debug file: {}", e);
+                    debug_eprintln!(self.debug_config.enabled, "Warning: Failed to save processed audio debug file: {}", e);
                 }
             }
             
@@ -509,7 +594,7 @@ impl VoiceToTextService {
             resampled.push(sample);
         }
         
-        eprintln!("🔄 Resampled {} samples ({}Hz) -> {} samples ({}Hz)", 
+        debug_eprintln!(self.debug_config.enabled, "🔄 Resampled {} samples ({}Hz) -> {} samples ({}Hz)", 
                 audio_data.len(), input_rate, resampled.len(), output_rate);
         
         resampled
@@ -523,7 +608,7 @@ impl VoiceToTextService {
             let max_amplitude = audio_data.iter().map(|&x| x.abs()).max_by(|a, b| a.partial_cmp(b).unwrap()).unwrap_or(0.0);
             let rms = (audio_data.iter().map(|&x| x * x).sum::<f32>() / audio_data.len() as f32).sqrt();
             
-            eprintln!("🎤 Audio stats: {:.2}s duration, max amplitude: {:.4}, RMS: {:.4}", 
+            debug_eprintln!(self.debug_config.enabled, "🎤 Audio stats: {:.2}s duration, max amplitude: {:.4}, RMS: {:.4}", 
                     duration_seconds, max_amplitude, rms);
             
             // Check minimum requirements
@@ -550,15 +635,24 @@ impl VoiceToTextService {
             params.set_max_initial_ts(1.0);
             params.set_length_penalty(-1.0);
             
-            eprintln!("🤖 Running Whisper transcription...");
+            debug_eprintln!(self.debug_config.enabled, "🤖 Running Whisper transcription...");
             
-            // Run the transcription
-            let mut state = ctx.create_state()?;
-            state.full(params, audio_data)?;
+            // Create state and run the transcription
+            let state = if self.debug_config.enabled {
+                // In debug mode, allow all output
+                let mut state = ctx.create_state()?;
+                state.full(params, audio_data)?;
+                state
+            } else {
+                // In non-debug mode, suppress stderr during state creation and transcription
+                let mut state = Self::create_state_quietly(ctx)?;
+                Self::run_transcription_quietly(&mut state, params, audio_data)?;
+                state
+            };
             
             // Collect the transcribed text with detailed logging
             let num_segments = state.full_n_segments()?;
-            eprintln!("📝 Whisper found {} segments", num_segments);
+            debug_eprintln!(self.debug_config.enabled, "📝 Whisper found {} segments", num_segments);
             
             let mut result = String::new();
             let mut all_segments = Vec::new();
@@ -568,7 +662,7 @@ impl VoiceToTextService {
                 let start_time = state.full_get_segment_t0(i)?;
                 let end_time = state.full_get_segment_t1(i)?;
                 
-                eprintln!("   Segment {}: [{:.2}s-{:.2}s] '{}'", i, start_time as f32 / 100.0, end_time as f32 / 100.0, segment_text);
+                debug_eprintln!(self.debug_config.enabled, "   Segment {}: [{:.2}s-{:.2}s] '{}'", i, start_time as f32 / 100.0, end_time as f32 / 100.0, segment_text);
                 all_segments.push(segment_text.clone());
                 result.push_str(&segment_text);
             }
@@ -622,7 +716,7 @@ impl VoiceToTextService {
         }
         writer.finalize()?;
 
-        eprintln!("🔧 Debug: Saved {} samples to {}", audio_data.len(), filepath.display());
+        debug_eprintln!(self.debug_config.enabled, "🔧 Debug: Saved {} samples to {}", audio_data.len(), filepath.display());
         Ok(())
     }
 
@@ -635,13 +729,13 @@ impl VoiceToTextService {
     }
 
     pub async fn transcribe_wav_file(&self, wav_path: &str) -> Result<String> {
-        eprintln!("📁 Loading WAV file: {}", wav_path);
+        debug_eprintln!(self.debug_config.enabled, "📁 Loading WAV file: {}", wav_path);
         
         // Read the WAV file
         let mut reader = WavReader::open(wav_path)?;
         let spec = reader.spec();
         
-        eprintln!("🎵 WAV specs: {}Hz, {} channels, {} bits", 
+        debug_eprintln!(self.debug_config.enabled, "🎵 WAV specs: {}Hz, {} channels, {} bits", 
                 spec.sample_rate, spec.channels, spec.bits_per_sample);
         
         // Read all samples as f32
@@ -661,261 +755,23 @@ impl VoiceToTextService {
         
         // Convert stereo to mono if needed
         if spec.channels == 2 {
-            eprintln!("🔄 Converting stereo to mono");
+            debug_eprintln!(self.debug_config.enabled, "🔄 Converting stereo to mono");
             let mono_data: Vec<f32> = audio_data.chunks(2)
                 .map(|chunk| (chunk[0] + chunk.get(1).unwrap_or(&0.0)) / 2.0)
                 .collect();
             audio_data = mono_data;
         }
         
-        eprintln!("📊 Loaded {} samples from WAV file", audio_data.len());
+        debug_eprintln!(self.debug_config.enabled, "📊 Loaded {} samples from WAV file", audio_data.len());
         
         // Transcribe using the existing pipeline
         self.transcribe_audio(audio_data).await
     }
 
-    async fn process_audio_chunk(&self, chunk_data: &[f32]) -> Result<Option<CommandType>> {
-        if !self.voice_command_config.enabled || chunk_data.is_empty() {
-            return Ok(None);
-        }
 
-        // Check if we have a Whisper model loaded
-        let whisper_ctx = self.whisper_context.lock().await;
-        if whisper_ctx.is_none() {
-            return Ok(None);
-        }
-        drop(whisper_ctx);
 
-        // Process the audio chunk for transcription
-        let processed_audio = self.prepare_audio_for_whisper(chunk_data)?;
-        
-        // Only process if we have enough audio data
-        let duration_seconds = processed_audio.len() as f32 / 16000.0;
-        if duration_seconds < 0.3 {
-            return Ok(None);
-        }
 
-        // Transcribe the chunk
-        match self.transcribe_chunk_with_whisper(&processed_audio).await {
-            Ok(transcription) => {
-                let detected_command = self.detect_voice_commands(&transcription);
-                
-                // Update partial transcription buffer
-                {
-                    let mut buffer = self.partial_transcription_buffer.lock().unwrap();
-                    if !transcription.trim().is_empty() {
-                        buffer.push_str(&transcription);
-                        buffer.push(' ');
-                    }
-                }
-
-                Ok(detected_command)
-            }
-            Err(_) => Ok(None)
-        }
-    }
-
-    async fn transcribe_chunk_with_whisper(&self, audio_data: &[f32]) -> Result<String> {
-        let whisper_ctx = self.whisper_context.lock().await;
-        if let Some(ref ctx) = *whisper_ctx {
-            // Create simplified transcription parameters for chunks
-            let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
-            params.set_language(None);
-            params.set_print_special(false);
-            params.set_print_progress(false);
-            params.set_print_realtime(false);
-            params.set_print_timestamps(false);
-            params.set_suppress_blank(true);
-            params.set_suppress_nst(true);
-            params.set_temperature(0.0);
-            
-            let mut state = ctx.create_state()?;
-            state.full(params, audio_data)?;
-            
-            let num_segments = state.full_n_segments()?;
-            let mut result = String::new();
-            
-            for i in 0..num_segments {
-                let segment_text = state.full_get_segment_text(i)?;
-                result.push_str(&segment_text);
-            }
-            
-            Ok(result.trim().to_string())
-        } else {
-            Err(anyhow::anyhow!("Whisper context not available"))
-        }
-    }
-
-    pub fn detect_voice_commands(&self, transcription: &str) -> Option<CommandType> {
-        if transcription.trim().is_empty() {
-            return None;
-        }
-
-        // Normalize the transcription for command detection
-        let normalized_text = transcription.to_lowercase().trim().to_string();
-        
-        // Check for commands using the existing command configuration
-        // Look for exact matches and also partial matches
-        for word in normalized_text.split_whitespace() {
-            // Remove punctuation from the word for matching
-            let clean_word = word.trim_matches(|c: char| !c.is_alphanumeric());
-            if let Some(command_type) = self.voice_command_config.command_config.match_command(clean_word) {
-                eprintln!("🎯 Voice command detected: '{}' -> {:?}", clean_word, command_type);
-                return Some(command_type);
-            }
-        }
-
-        // Also check the entire phrase for multi-word commands like "stop recording"
-        if let Some(command_type) = self.voice_command_config.command_config.match_command(&normalized_text) {
-            eprintln!("🎯 Voice command detected: '{}' -> {:?}", normalized_text, command_type);
-            return Some(command_type);
-        }
-
-        // Check for common variations
-        if normalized_text.contains("stop") && (normalized_text.contains("recording") || normalized_text.contains("record")) {
-            eprintln!("🎯 Voice command detected: 'stop recording' variation -> Stop");
-            return Some(CommandType::Stop);
-        }
-
-        if normalized_text.contains("start") && (normalized_text.contains("recording") || normalized_text.contains("record")) {
-            eprintln!("🎯 Voice command detected: 'start recording' variation -> Start");
-            return Some(CommandType::Start);
-        }
-
-        None
-    }
-
-    async fn check_for_voice_commands(&self) -> Result<()> {
-        if !self.voice_command_config.enabled {
-            return Ok(());
-        }
-
-        let now = std::time::Instant::now();
-        let should_check = {
-            let mut last_check = self.last_chunk_time.lock().unwrap();
-            match *last_check {
-                Some(last_time) => {
-                    let elapsed_ms = now.duration_since(last_time).as_millis();
-                    if elapsed_ms >= self.voice_command_config.chunk_duration_ms as u128 {
-                        if self.debug_config.enabled {
-                            eprintln!("⏰ [{}] Voice command check interval: {}ms (threshold: {}ms)", 
-                                     chrono::Utc::now().format("%H:%M:%S%.3f"),
-                                     elapsed_ms, 
-                                     self.voice_command_config.chunk_duration_ms);
-                        }
-                        *last_check = Some(now);
-                        true
-                    } else {
-                        false
-                    }
-                }
-                None => {
-                    if self.debug_config.enabled {
-                        eprintln!("⏰ [{}] Voice command check initialized", 
-                                 chrono::Utc::now().format("%H:%M:%S%.3f"));
-                    }
-                    *last_check = Some(now);
-                    true
-                }
-            }
-        };
-
-        if !should_check {
-            return Ok(());
-        }
-
-        // Get a chunk of recent audio data
-        let chunk_data = {
-            let audio_data = self.audio_data.lock().unwrap();
-            if audio_data.len() < 16000 { // Less than 1 second of 16kHz audio
-                return Ok(());
-            }
-            
-            // Get the last chunk_duration_ms worth of audio
-            let chunk_samples = (self.voice_command_config.chunk_duration_ms as f32 * 44.1) as usize; // 44.1kHz input
-            let start_idx = if audio_data.len() > chunk_samples {
-                audio_data.len() - chunk_samples
-            } else {
-                0
-            };
-            
-            audio_data[start_idx..].to_vec()
-        };
-
-        // Process the chunk and check for commands
-        if let Ok(Some(command_type)) = self.process_audio_chunk(&chunk_data).await {
-            eprintln!("🎙️ [{}] Processing voice command: {:?}", 
-                     chrono::Utc::now().format("%H:%M:%S%.3f"), command_type);
-            self.voice_command_detected.store(true, Ordering::Relaxed);
-            
-            // Update last command atomically for state tracking
-            self.set_last_command(command_type.clone());
-            
-            // Add command to queue for processing
-            {
-                let mut queue = self.command_queue.lock().unwrap();
-                queue.push_back(command_type.clone());
-                
-                // Limit queue size to prevent memory bloat
-                if queue.len() > 10 {
-                    queue.pop_front();
-                }
-            }
-            
-            // Execute critical commands immediately (Stop and Toggle stop)
-            match command_type {
-                CommandType::Stop => {
-                    if self.is_recording() {
-                        eprintln!("🛑 [{}] Voice command: Stopping recording immediately", 
-                                 chrono::Utc::now().format("%H:%M:%S%.3f"));
-                        let stop_start = std::time::Instant::now();
-                        // Stop recording immediately for responsiveness
-                        self.is_recording.store(false, Ordering::Relaxed);
-                        // Stop and drop the audio stream
-                        {
-                            let mut stream_guard = self.audio_stream.lock().unwrap();
-                            *stream_guard = None;
-                        }
-                        let stop_duration = stop_start.elapsed();
-                        eprintln!("✅ [{}] Stop command executed in {:.2}ms", 
-                                 chrono::Utc::now().format("%H:%M:%S%.3f"), 
-                                 stop_duration.as_secs_f64() * 1000.0);
-                    }
-                }
-                CommandType::Toggle => {
-                    eprintln!("🔄 [{}] Voice command: Toggle recording immediately", 
-                             chrono::Utc::now().format("%H:%M:%S%.3f"));
-                    let toggle_start = std::time::Instant::now();
-                    // Toggle recording state immediately
-                    if self.is_recording() {
-                        self.is_recording.store(false, Ordering::Relaxed);
-                        // Stop and drop the audio stream
-                        {
-                            let mut stream_guard = self.audio_stream.lock().unwrap();
-                            *stream_guard = None;
-                        }
-                    }
-                    let toggle_duration = toggle_start.elapsed();
-                    eprintln!("✅ [{}] Toggle command executed in {:.2}ms", 
-                             chrono::Utc::now().format("%H:%M:%S%.3f"), 
-                             toggle_duration.as_secs_f64() * 1000.0);
-                }
-                CommandType::Start => {
-                    eprintln!("🎙️ [{}] Voice command: Start queued (ignored during recording)", 
-                             chrono::Utc::now().format("%H:%M:%S%.3f"));
-                }
-                CommandType::Status => {
-                    eprintln!("📊 [{}] Voice command: Status check - Recording: {}, Samples: {}, Queue: {}", 
-                             chrono::Utc::now().format("%H:%M:%S%.3f"),
-                             self.is_recording(), self.get_audio_sample_count(), self.get_command_queue_size());
-                }
-            }
-        }
-
-        Ok(())
-    }
-
-    async fn start_audio_capture_with_voice_commands(&self) -> Result<()> {
+    async fn start_audio_capture(&self) -> Result<()> {
         let host = cpal::default_host();
         let device = host
             .default_input_device()
@@ -927,10 +783,7 @@ impl VoiceToTextService {
 
         let audio_data = Arc::clone(&self.audio_data);
         let is_recording = Arc::clone(&self.is_recording);
-        let voice_commands_enabled = self.voice_command_config.enabled;
-        
-        // Clone the service for voice command checking
-        let service_clone = self.clone();
+        let debug_enabled = self.debug_config.enabled;
 
         let stream = device.build_input_stream(
             &config.into(),
@@ -948,26 +801,10 @@ impl VoiceToTextService {
                             audio_buffer.push(mono_sample);
                         }
                     }
-                    
-                    // Check for voice commands if enabled
-                    if voice_commands_enabled {
-                        let service_for_check = service_clone.clone();
-                        // Use Handle::try_current() to check if we're in a Tokio runtime
-                        if let Ok(handle) = tokio::runtime::Handle::try_current() {
-                            handle.spawn(async move {
-                                if let Err(e) = service_for_check.check_for_voice_commands().await {
-                                    eprintln!("Voice command check error: {}", e);
-                                }
-                                
-                                // Voice commands are now handled immediately in check_for_voice_commands
-                                // No need for deferred stop handling
-                            });
-                        }
-                    }
                 }
             },
             move |err| {
-                eprintln!("Audio stream error: {}", err);
+                debug_eprintln!(debug_enabled, "Audio stream error: {}", err);
             },
             None,
         )?;
@@ -983,54 +820,6 @@ impl VoiceToTextService {
         Ok(())
     }
 
-    pub fn remove_voice_commands_from_transcription(&self, transcription: &str, partial_buffer: &str) -> String {
-        if partial_buffer.trim().is_empty() {
-            return transcription.to_string();
-        }
-
-        let mut cleaned_transcription = transcription.to_string();
-        
-        // Remove detected command words from the transcription
-        for command_word in partial_buffer.split_whitespace() {
-            let command_word_lower = command_word.to_lowercase();
-            
-            // Check if this word is a command
-            if self.voice_command_config.command_config.match_command(&command_word_lower).is_some() {
-                // Remove this word and common variations
-                cleaned_transcription = cleaned_transcription
-                    .replace(&command_word_lower, "")
-                    .replace(&command_word.to_uppercase(), "")
-                    .replace(command_word, "");
-            }
-        }
-        
-        // Remove common command phrases
-        let phrases_to_remove = [
-            "stop recording", "start recording", "stop record", "start record",
-            "end recording", "begin recording", "finish recording"
-        ];
-        
-        for phrase in &phrases_to_remove {
-            cleaned_transcription = cleaned_transcription
-                .replace(phrase, "")
-                .replace(&phrase.to_uppercase(), "")
-                .replace(&phrase.to_lowercase(), "");
-        }
-        
-        // Clean up multiple spaces and trim
-        cleaned_transcription = cleaned_transcription
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ")
-            .trim()
-            .to_string();
-        
-        if cleaned_transcription.is_empty() {
-            "No speech content detected (only voice commands)".to_string()
-        } else {
-            cleaned_transcription
-        }
-    }
 
     async fn listen_with_auto_stop(&self, timeout_ms: u64, silence_timeout_ms: u64) -> Result<String> {
         use tokio::time::{sleep, Duration, Instant};
@@ -1076,6 +865,12 @@ impl VoiceToTextService {
                     
                     if has_audio {
                         break;
+                    } else {
+                        // Also auto-stop even without audio if we've been silent long enough
+                        // This prevents hanging when no speech is detected
+                        if last_activity_time.elapsed().as_millis() > (silence_timeout_ms * 2) as u128 {
+                            break;
+                        }
                     }
                 }
             }
@@ -1087,10 +882,140 @@ impl VoiceToTextService {
         self.stop_listening().await
     }
 
-    #[allow(dead_code)]
-    fn get_last_detected_command(&self) -> Option<CommandType> {
-        // Use the atomic tracking for accurate last command detection
-        self.get_last_command()
+
+    // Keyboard listener functionality
+    pub async fn start_keyboard_listener(&self) -> Result<()> {
+        if !self.keyboard_config.enabled {
+            return Ok(());
+        }
+
+        let service_clone = self.clone();
+        let keyboard_config = self.keyboard_config.clone();
+        let debug_enabled = self.debug_config.enabled;
+        
+        tokio::spawn(async move {
+            if let Err(e) = service_clone.keyboard_listener_loop(keyboard_config).await {
+                debug_eprintln!(debug_enabled, "Keyboard listener error: {}", e);
+            }
+        });
+
+        Ok(())
+    }
+
+    async fn keyboard_listener_loop(&self, config: KeyboardConfig) -> Result<()> {
+        use crossterm::{
+            event::{self, Event, KeyEvent},
+            terminal::{disable_raw_mode, enable_raw_mode}
+        };
+
+        // Check if we can safely enable raw mode (not in MCP server mode)
+        let can_use_raw_mode = std::env::var("MCP_SERVER_MODE").is_err();
+        
+        if can_use_raw_mode {
+            if let Err(e) = enable_raw_mode() {
+                debug_eprintln!(self.debug_config.enabled, "Warning: Could not enable raw terminal mode: {}", e);
+                debug_eprintln!(self.debug_config.enabled, "Keyboard controls may not work properly. Try running without --mcp-server flag.");
+                return Ok(());
+            }
+        } else {
+            debug_eprintln!(self.debug_config.enabled, "Note: Keyboard controls disabled in MCP server mode (stdin/stdout reserved for MCP protocol)");
+            return Ok(());
+        }
+
+        let mut should_exit = false;
+        let start_time = std::time::Instant::now();
+
+        loop {
+            // Exit after some time of inactivity or if explicitly requested
+            if should_exit || (start_time.elapsed().as_secs() > 3600) { // 1 hour timeout
+                break;
+            }
+
+            // Poll for keyboard events with timeout
+            if crossterm::event::poll(std::time::Duration::from_millis(100))? {
+                match event::read()? {
+                    Event::Key(KeyEvent { code, modifiers, .. }) => {
+                        if let Some(command) = self.match_keyboard_command(&config, code, modifiers) {
+                            if let Err(e) = self.execute_keyboard_command(command).await {
+                                debug_eprintln!(self.debug_config.enabled, "Error executing keyboard command: {}", e);
+                            }
+                        }
+                        
+                        // Exit on Escape key
+                        if matches!(code, crossterm::event::KeyCode::Esc) {
+                            debug_eprintln!(self.debug_config.enabled, "🎹 Keyboard listener exiting on Escape key");
+                            should_exit = true;
+                        }
+                    },
+                    _ => {} // Ignore other events
+                }
+            }
+            
+            // Small delay to prevent busy waiting
+            tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+        }
+
+        if can_use_raw_mode {
+            disable_raw_mode()?;
+        }
+        Ok(())
+    }
+
+    fn match_keyboard_command(&self, config: &KeyboardConfig, key_code: crossterm::event::KeyCode, modifiers: crossterm::event::KeyModifiers) -> Option<CommandType> {
+        match key_code {
+            crossterm::event::KeyCode::Char(ch) => {
+                if ch == config.toggle_key && modifiers.is_empty() {
+                    return Some(CommandType::Toggle);
+                }
+                
+                if config.enable_ctrl_modifier && modifiers.contains(crossterm::event::KeyModifiers::CONTROL) {
+                    if ch == config.start_key {
+                        return Some(CommandType::Start);
+                    } else if ch == config.stop_key {
+                        return Some(CommandType::Stop);
+                    } else if ch == config.status_key {
+                        return Some(CommandType::Status);
+                    }
+                }
+            },
+            _ => {}
+        }
+        None
+    }
+
+    async fn execute_keyboard_command(&self, command: CommandType) -> Result<()> {
+        match command {
+            CommandType::Start => {
+                if !self.is_recording() {
+                    debug_eprintln!(self.debug_config.enabled, "🎹 Keyboard: Starting recording (Ctrl+R)");
+                    let _ = self.start_listening().await?;
+                }
+            },
+            CommandType::Stop => {
+                if self.is_recording() {
+                    debug_eprintln!(self.debug_config.enabled, "🎹 Keyboard: Stopping recording (Ctrl+S)");
+                    let result = self.stop_listening().await?;
+                    debug_eprintln!(self.debug_config.enabled, "🎹 Result: {}", result);
+                }
+            },
+            CommandType::Toggle => {
+                debug_eprintln!(self.debug_config.enabled, "🎹 Keyboard: Toggling recording (Space)");
+                if self.is_recording() {
+                    let result = self.stop_listening().await?;
+                    debug_eprintln!(self.debug_config.enabled, "🎹 Result: {}", result);
+                } else {
+                    let _ = self.start_listening().await?;
+                }
+            },
+            CommandType::Status => {
+                let status = format!("🎹 Status: Recording: {}, Samples: {}, Keyboard Controls: {}", 
+                                   self.is_recording(), 
+                                   self.get_audio_sample_count(),
+                                   if self.is_keyboard_enabled() { "enabled" } else { "disabled" });
+                debug_eprintln!(self.debug_config.enabled, "{}", status);
+            },
+        }
+        Ok(())
     }
 }
 
@@ -1101,10 +1026,7 @@ impl std::fmt::Debug for VoiceToTextService {
             .field("audio_data_len", &self.audio_data.lock().unwrap().len())
             .field("has_whisper_context", &"<async_mutex>")
             .field("debug_config", &self.debug_config)
-            .field("voice_command_config", &self.voice_command_config)
-            .field("voice_command_detected", &self.voice_command_detected)
-            .field("partial_transcription_buffer_len", &self.partial_transcription_buffer.lock().unwrap().len())
-            .field("command_queue_size", &self.command_queue.lock().unwrap().len())
+            .field("keyboard_config", &self.keyboard_config)
             .finish()
     }
 }
@@ -1485,180 +1407,7 @@ mod tests {
         assert!(max_val <= 1.0, "Audio should be normalized to [-1.0, 1.0] range");
     }
 
-    #[tokio::test]
-    async fn test_voice_command_config_creation() {
-        let voice_config = VoiceCommandConfig {
-            enabled: true,
-            chunk_duration_ms: 2000,
-            detection_sensitivity: 0.8,
-            include_in_final_transcription: true,
-            command_config: CommandConfig::default(),
-        };
+    // Voice command tests removed - functionality moved to blocking binary architecture
 
-        let service = VoiceToTextService::new_with_configs(
-            DebugConfig::default(),
-            voice_config.clone(),
-        );
-
-        assert!(service.is_voice_commands_enabled());
-        assert_eq!(service.get_voice_command_config().chunk_duration_ms, 2000);
-        assert_eq!(service.get_voice_command_config().detection_sensitivity, 0.8);
-        assert!(service.get_voice_command_config().include_in_final_transcription);
-    }
-
-    #[tokio::test]
-    async fn test_voice_command_enable_disable() {
-        let mut service = VoiceToTextService::new();
-        
-        // Initially enabled by default
-        assert!(service.is_voice_commands_enabled());
-        
-        // Enable voice commands
-        service.set_voice_commands_enabled(true);
-        assert!(service.is_voice_commands_enabled());
-        
-        // Disable voice commands
-        service.set_voice_commands_enabled(false);
-        assert!(!service.is_voice_commands_enabled());
-    }
-
-    #[tokio::test]
-    async fn test_voice_command_detection_unit() {
-        let mut voice_config = VoiceCommandConfig::default();
-        voice_config.enabled = true;
-        
-        let service = VoiceToTextService::new_with_configs(
-            DebugConfig::default(),
-            voice_config,
-        );
-
-        // Test basic command detection
-        assert_eq!(service.detect_voice_commands("stop"), Some(CommandType::Stop));
-        assert_eq!(service.detect_voice_commands("start"), Some(CommandType::Start));
-        assert_eq!(service.detect_voice_commands("status"), Some(CommandType::Status));
-        assert_eq!(service.detect_voice_commands("toggle"), Some(CommandType::Toggle));
-        
-        // Test case insensitivity
-        assert_eq!(service.detect_voice_commands("STOP"), Some(CommandType::Stop));
-        assert_eq!(service.detect_voice_commands("Start"), Some(CommandType::Start));
-        
-        // Test no detection
-        assert_eq!(service.detect_voice_commands("hello world"), None);
-        assert_eq!(service.detect_voice_commands(""), None);
-    }
-
-    #[tokio::test]
-    async fn test_voice_command_state_management_unit() {
-        let mut voice_config = VoiceCommandConfig::default();
-        voice_config.enabled = true;
-        
-        let service = VoiceToTextService::new_with_configs(
-            DebugConfig::default(),
-            voice_config,
-        );
-
-        // Initially no command detected
-        assert!(!service.voice_command_detected());
-        
-        // Reset should work
-        service.reset_voice_command_detection();
-        assert!(!service.voice_command_detected());
-    }
-
-    #[tokio::test]
-    async fn test_voice_command_transcription_filtering_unit() {
-        let mut voice_config = VoiceCommandConfig::default();
-        voice_config.enabled = true;
-        voice_config.include_in_final_transcription = false;
-        
-        let service = VoiceToTextService::new_with_configs(
-            DebugConfig::default(),
-            voice_config,
-        );
-
-        // Test removing voice commands from transcription
-        let original = "Hello world stop recording thank you";
-        let partial_buffer = "stop recording";
-        let cleaned = service.remove_voice_commands_from_transcription(original, partial_buffer);
-        
-        // Should remove command words but keep content
-        assert!(cleaned.contains("Hello world"));
-        assert!(cleaned.contains("thank you"));
-        // Note: The current implementation focuses on removing command words
-        // "recording" might remain as it's commonly used in non-command contexts
-        assert!(!cleaned.contains("stop"));
-    }
-
-    #[tokio::test]
-    async fn test_voice_command_phrase_detection_unit() {
-        let mut voice_config = VoiceCommandConfig::default();
-        voice_config.enabled = true;
-        
-        let service = VoiceToTextService::new_with_configs(
-            DebugConfig::default(),
-            voice_config,
-        );
-
-        // Test phrase variations
-        assert_eq!(service.detect_voice_commands("stop recording"), Some(CommandType::Stop));
-        assert_eq!(service.detect_voice_commands("start recording"), Some(CommandType::Start));
-        assert_eq!(service.detect_voice_commands("please stop record"), Some(CommandType::Stop));
-        assert_eq!(service.detect_voice_commands("end recording"), Some(CommandType::Stop));
-        assert_eq!(service.detect_voice_commands("finish recording"), Some(CommandType::Stop));
-        
-        // Test no false positives
-        assert_eq!(service.detect_voice_commands("stopping by the store"), None);
-        assert_eq!(service.detect_voice_commands("starting tomorrow"), None);
-    }
-
-    #[tokio::test]
-    async fn test_voice_command_word_boundary_detection() {
-        let mut voice_config = VoiceCommandConfig::default();
-        voice_config.enabled = true;
-        
-        let service = VoiceToTextService::new_with_configs(
-            DebugConfig::default(),
-            voice_config,
-        );
-
-        // Test word boundaries
-        assert_eq!(service.detect_voice_commands("stop"), Some(CommandType::Stop));
-        assert_eq!(service.detect_voice_commands("stop."), Some(CommandType::Stop));
-        assert_eq!(service.detect_voice_commands("  stop  "), Some(CommandType::Stop));
-        
-        // Test that partial words don't match
-        assert_eq!(service.detect_voice_commands("stopped"), None);
-        assert_eq!(service.detect_voice_commands("unstoppable"), None);
-        assert_eq!(service.detect_voice_commands("stopping"), None);
-    }
-
-    #[tokio::test]
-    async fn test_voice_command_config_defaults() {
-        let config = VoiceCommandConfig::default();
-        
-        assert!(config.enabled); // Enabled by default
-        assert_eq!(config.chunk_duration_ms, 500);
-        assert_eq!(config.detection_sensitivity, 0.7);
-        assert!(!config.include_in_final_transcription);
-    }
-
-    #[tokio::test]
-    async fn test_new_constructors_with_voice_commands() {
-        // Test new constructor methods include voice command config
-        let debug_config = DebugConfig::default();
-        let mut voice_config = VoiceCommandConfig::default();
-        voice_config.enabled = true;
-        
-        let service = VoiceToTextService::new_with_configs(debug_config, voice_config);
-        assert!(service.is_voice_commands_enabled());
-        
-        // Test model constructor with voice commands
-        let debug_config = DebugConfig::default();
-        let mut voice_config = VoiceCommandConfig::default();
-        voice_config.enabled = true;
-        
-        // This will fail without a real model file, but we can test the error path
-        let result = VoiceToTextService::new_with_model_and_configs("nonexistent.bin", debug_config, voice_config);
-        assert!(result.is_err()); // Expected - no model file
-    }
 }
+

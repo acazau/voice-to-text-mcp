@@ -16,6 +16,15 @@ hound = "3.5"
 anyhow = "1.0"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4.0", features = ["derive"] }
+crossterm = "0.27"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[[bin]]
+name = "voice-to-text-mcp"
+path = "src/main.rs"
+
 
 [dev-dependencies]
 tokio-test = "0.4"
