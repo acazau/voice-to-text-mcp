@@ -70,13 +70,11 @@ async fn main() -> Result<()> {
         save_processed: args.save_processed,
     };
 
-    // Disable keyboard controls for blocking mode
-    let keyboard_config = voice_to_text_mcp::KeyboardConfig::default();
     
     // Create the voice service
     let service = if let Some(ref model_path) = args.model_path {
         if model_path.exists() {
-            match VoiceToTextService::new_with_model_and_keyboard(model_path.to_str().unwrap(), debug_config.clone(), keyboard_config.clone()) {
+            match VoiceToTextService::new_with_model_and_debug(model_path.to_str().unwrap(), debug_config.clone()) {
                 Ok(service) => service,
                 Err(e) => {
                     eprintln!("Error: Failed to load Whisper model: {}", e);
@@ -89,7 +87,7 @@ async fn main() -> Result<()> {
         }
     } else {
         // Model will be required for non-MCP mode, but create service anyway for MCP mode
-        VoiceToTextService::new_with_keyboard(debug_config.clone(), keyboard_config.clone())
+        VoiceToTextService::new_with_debug(debug_config.clone())
     };
 
     // Check if running as MCP server

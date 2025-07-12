@@ -7,7 +7,6 @@ use rmcp::{
 use std::future::Future;
 use serde::Deserialize;
 use schemars::JsonSchema;
-use anyhow::Result;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -108,7 +107,7 @@ impl ServerHandler for VoiceToTextMcpServer {
         &self,
         _request: Option<PaginatedRequestParam>,
         _context: RequestContext<RoleServer>,
-    ) -> Result<ListToolsResult, rmcp::Error> {
+    ) -> std::result::Result<ListToolsResult, rmcp::Error> {
         let tools = self.tool_router.list_all();
         Ok(ListToolsResult { tools, next_cursor: None })
     }
@@ -117,7 +116,7 @@ impl ServerHandler for VoiceToTextMcpServer {
         &self,
         request: CallToolRequestParam,
         _context: RequestContext<RoleServer>,
-    ) -> Result<CallToolResult, rmcp::Error> {
+    ) -> std::result::Result<CallToolResult, rmcp::Error> {
         // Use the router to call the appropriate tool method
         match request.name.as_ref() {
             "transcribe_file" => {
@@ -158,7 +157,7 @@ impl ServerHandler for VoiceToTextMcpServer {
     }
 }
 
-pub async fn run_mcp_server(service: VoiceToTextService) -> Result<()> {
+pub async fn run_mcp_server(service: VoiceToTextService) -> anyhow::Result<()> {
     if service.get_debug_config().enabled {
         eprintln!("Voice-to-Text MCP Server started with rmcp 0.2.1");
     }
@@ -169,10 +168,12 @@ pub async fn run_mcp_server(service: VoiceToTextService) -> Result<()> {
     let transport = (tokio::io::stdin(), tokio::io::stdout());
     
     // Serve the service using rmcp
-    let server_instance = server.serve(transport).await?;
+    let server_instance = server.serve(transport).await
+        .map_err(|e| anyhow::anyhow!("Failed to start MCP server: {}", e))?;
     
     // Wait for service shutdown
-    let _quit_reason = server_instance.waiting().await?;
+    let _quit_reason = server_instance.waiting().await
+        .map_err(|e| anyhow::anyhow!("MCP server error: {}", e))?;
     
     Ok(())
 }

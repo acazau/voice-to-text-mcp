@@ -19,8 +19,8 @@ async fn test_listen_without_model_path() {
     let request = create_listen_request();
     let result = server.listen(Parameters(request)).await;
     
-    // Should return error about no model path configured
-    assert!(result.contains("Error: No model path configured"));
+    // Should return error about no model loaded
+    assert!(result.contains("Error: Whisper model not loaded"));
 }
 
 #[tokio::test]
