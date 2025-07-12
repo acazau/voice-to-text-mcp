@@ -205,7 +205,7 @@ The project includes:
 - **Unit Tests** (17 tests) - Core functionality and hardware acceleration testing
 - **Integration Tests** (5 tests) - End-to-end workflow and acceleration performance testing  
 - **Property-Based Tests** (2 tests) - Randomized input validation
-- **MCP Interface Tests** (8 tests) - Complete MCP protocol testing with configurable commands
+- **MCP Interface Tests** (14 tests) - Complete MCP protocol testing with comprehensive coverage
 
 ### Check Hardware Acceleration
 
@@ -642,6 +642,11 @@ The implementation provides a complete voice-to-text MCP server. Future enhancem
   - **Metal/CoreML** (macOS): 2-3 minutes
 - Subsequent builds are much faster
 
+#### Platform Compatibility
+- **macOS**: Uses platform-specific compatibility layer to handle CoreAudio threading constraints
+- **Linux/Windows**: Standard threading model with CUDA acceleration
+- All platforms maintain identical functionality and API
+
 #### Performance Notes
 - **macOS Apple Silicon**: Up to 3x faster with CoreML, 2-3x faster with NEON SIMD
 - **macOS Intel**: 1.5-2x faster with Metal GPU acceleration
@@ -678,6 +683,7 @@ voice-to-text-mcp/
 │   ├── lib.rs              # Main service coordination
 │   ├── main.rs             # CLI entry point
 │   ├── mcp_server.rs       # MCP protocol implementation
+│   ├── platform_compat.rs  # Cross-platform compatibility layer
 │   ├── audio.rs            # Audio capture and processing
 │   ├── whisper.rs          # Whisper transcription logic
 │   ├── config.rs           # Configuration and constants

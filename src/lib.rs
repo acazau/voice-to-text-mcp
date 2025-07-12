@@ -5,6 +5,7 @@ use tokio::time::{sleep, Duration, Instant};
 pub mod error;
 pub mod config;
 pub mod platform;
+pub mod platform_compat;
 pub mod audio;
 pub mod whisper;
 pub mod mcp_server;

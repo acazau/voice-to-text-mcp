@@ -55,7 +55,7 @@ impl VoiceToTextMcpServer {
         }
     }
 
-    #[tool(description = "Voice recording control: configurable commands for start/stop/status/toggle")]
+    #[tool(description = "Start recording audio and return transcribed text when complete")]
     pub async fn listen(
         &self,
         Parameters(ListenRequest { timeout_ms, silence_timeout_ms, auto_stop }): Parameters<ListenRequest>,
@@ -65,24 +65,25 @@ impl VoiceToTextMcpServer {
         let silence_timeout = silence_timeout_ms.unwrap_or(2000);
         let auto_stop_enabled = auto_stop.unwrap_or(true);
 
-        // Log the operation for debugging (only in debug mode)
+        // Get debug status first
         let debug_enabled = {
             let service = self.service.lock().await;
             service.get_debug_config().enabled
         };
+        
         if debug_enabled {
             eprintln!("🎤 MCP: Starting voice recording with timeout: {}ms, silence_timeout: {}ms, auto_stop: {}", 
                      timeout, silence_timeout, auto_stop_enabled);
         }
 
-        // Use the VoiceToTextService directly instead of subprocess
+        // Use the VoiceToTextService directly
         let service = self.service.lock().await;
         match service.start_listening_with_options(timeout, silence_timeout, auto_stop_enabled).await {
-            Ok(result) => {
+            Ok(text) => {
                 if debug_enabled {
                     eprintln!("🎤 MCP: Recording completed successfully");
                 }
-                result
+                text
             }
             Err(e) => {
                 if debug_enabled {
@@ -97,7 +98,6 @@ impl VoiceToTextMcpServer {
 impl ServerHandler for VoiceToTextMcpServer {
     fn get_info(&self) -> ServerInfo {
         ServerInfo {
-            instructions: Some("A voice-to-text transcription server using Whisper".into()),
             capabilities: ServerCapabilities::builder().enable_tools().build(),
             ..Default::default()
         }
@@ -158,6 +158,10 @@ impl ServerHandler for VoiceToTextMcpServer {
 }
 
 pub async fn run_mcp_server(service: VoiceToTextService) -> anyhow::Result<()> {
+    // Import the platform compatibility layer to enable Send/Sync on macOS
+    #[allow(unused_imports)]
+    use crate::platform_compat::*;
+    
     if service.get_debug_config().enabled {
         eprintln!("Voice-to-Text MCP Server started with rmcp 0.2.1");
     }
