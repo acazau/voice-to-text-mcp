@@ -12,6 +12,7 @@ A Model Context Protocol (MCP) server for voice-to-text transcription using Rust
 - **Real-time Audio Capture** - Live microphone recording
 - **File Transcription** - Process existing WAV files
 - **Cross-platform Support** - Works on Linux, macOS, and Windows
+- **Voice Command Recognition** - Automatic voice command detection during recording
 - **Debug Mode** - Save audio files for troubleshooting
 
 ## Current Status
@@ -24,6 +25,7 @@ A Model Context Protocol (MCP) server for voice-to-text transcription using Rust
 - Comprehensive command-line interface
 - Debug mode with audio file saving
 - Complete test suite
+- Voice command recognition for automatic stop triggers
 
 ## Dependencies
 
@@ -62,9 +64,8 @@ Run as an MCP server for integration with MCP clients:
 
 **Available MCP Tools:**
 - `transcribe_file` - Transcribe an audio file to text
-- `start_recording` - Begin live audio recording  
-- `stop_recording` - Stop recording and get transcription
-- `get_recording_status` - Get current recording status
+- `listen` - Unified voice control with configurable commands (start/stop/status/toggle)
+  - Optional `enable_voice_commands` parameter for runtime voice command control
 
 ### Interactive CLI Mode
 
@@ -120,6 +121,55 @@ VOICE_DEBUG=true ./target/release/voice-to-text-mcp models/ggml-base.en.bin
 - Timestamp-based file naming
 - Helpful for troubleshooting audio issues and Whisper input validation
 
+### Voice Command Recognition
+
+Enable automatic voice command detection during recording sessions:
+
+```bash
+# Enable voice commands with default settings
+./target/release/voice-to-text-mcp --voice-commands models/ggml-base.en.bin
+
+# Customize voice command settings
+./target/release/voice-to-text-mcp --voice-commands \
+  --voice-chunk-duration 2000 \
+  --voice-sensitivity 0.8 \
+  --include-voice-commands \
+  models/ggml-base.en.bin
+
+# Enable for MCP server mode
+./target/release/voice-to-text-mcp --mcp-server --voice-commands models/ggml-base.en.bin
+```
+
+**Voice Command Features:**
+- **Enabled by Default**: Voice commands are automatically enabled for better user experience
+- **Real-time Detection**: Automatically detects spoken commands during recording
+- **Automatic Stop**: Say "stop", "stop recording", or "end" to automatically stop recording
+- **Configurable Sensitivity**: Adjust detection sensitivity (0.0-1.0)
+- **Customizable Timing**: Control audio chunk processing duration
+- **Transcription Control**: Choose whether to include voice commands in final transcription
+- **MCP Integration**: Enable/disable voice commands per MCP session
+
+**Environment Variables:**
+```bash
+export VOICE_COMMANDS_ENABLED=true
+export VOICE_CHUNK_DURATION=1500     # milliseconds
+export VOICE_SENSITIVITY=0.7         # 0.0-1.0
+export VOICE_INCLUDE_COMMANDS=false  # include in transcription
+```
+
+**Example Workflow:**
+```bash
+# Start recording with voice commands enabled
+./target/release/voice-to-text-mcp --voice-commands models/ggml-base.en.bin
+
+# In CLI: type 'start' or use voice command
+> start
+Started listening with voice commands enabled...
+
+# Speak your content, then say "stop recording" to automatically end
+# The system will detect the voice command and stop recording
+```
+
 ### Model Download
 
 Use our interactive download script (recommended):
@@ -159,6 +209,8 @@ The project includes:
 - **Unit Tests** (20 tests) - Core functionality and hardware acceleration testing
 - **Integration Tests** (5 tests) - End-to-end workflow and acceleration performance testing  
 - **Property-Based Tests** (2 tests) - Randomized input validation
+- **Voice Command Tests** (12 tests) - Voice command detection, configuration, and MCP integration
+- **MCP Interface Tests** (13 tests) - Complete MCP protocol testing with configurable commands
 
 ### Check Hardware Acceleration
 
@@ -182,6 +234,8 @@ Test coverage includes:
 - **Audio normalization and preprocessing**
 - **Debug configuration and WAV file saving**
 - **Timestamp-based file naming**
+- **Voice command detection and configuration**
+- **MCP voice command integration**
 
 ## MCP Integration
 
@@ -222,7 +276,56 @@ This project includes custom Claude Code slash commands for easy voice recording
 
 The slash commands are automatically available when you open this project in Claude Code.
 
-**Project-level configuration (`.mcp.json`):**
+## Configurable Voice Commands
+
+Voice commands can be customized via CLI arguments or environment variables:
+
+### CLI Arguments
+```bash
+# Custom start/stop commands
+./target/release/voice-to-text-mcp --mcp-server models/ggml-base.en.bin \
+  --start-commands "go,begin,record" \
+  --stop-commands "halt,finish,done"
+
+# Multilingual commands (Spanish/French)  
+./target/release/voice-to-text-mcp --mcp-server models/ggml-base.en.bin \
+  --start-commands "start,iniciar,commencer" \
+  --stop-commands "stop,parar,arrêter" \
+  --status-commands "status,estado,statut"
+
+# Personal preference commands
+./target/release/voice-to-text-mcp --mcp-server models/ggml-base.en.bin \
+  --start-commands "begin,record" \
+  --stop-commands "end,transcribe" \
+  --toggle-commands "switch,toggle"
+```
+
+### Environment Variables (Fallback)
+```bash
+export VOICE_START_COMMANDS="start,begin,go"
+export VOICE_STOP_COMMANDS="stop,end,done"
+export VOICE_STATUS_COMMANDS="status,check,info"
+export VOICE_TOGGLE_COMMANDS="toggle,switch,"
+
+# Then run without CLI args
+./target/release/voice-to-text-mcp --mcp-server models/ggml-base.en.bin
+```
+
+### Configuration Priority
+1. CLI arguments (highest priority)
+2. Environment variables 
+3. Default commands: `start,begin,record` / `stop,end,finish` / `status,check,info` / `toggle,switch`
+
+**Features:**
+- Commands are case-insensitive
+- Whitespace is automatically trimmed
+- Multiple aliases per command type
+- Backward compatible with original commands
+- Easy MCP integration via CLI args
+
+### MCP Configuration Examples
+
+**Basic setup (`.mcp.json`):**
 ```json
 {
   "mcpServers": {
@@ -234,13 +337,54 @@ The slash commands are automatically available when you open this project in Cla
 }
 ```
 
-### Claude Desktop Integration
+**Custom commands:**
+```json
+{
+  "mcpServers": {
+    "voice-to-text": {
+      "command": "./target/release/voice-to-text-mcp",
+      "args": [
+        "--mcp-server", 
+        "models/ggml-base.en.bin",
+        "--start-commands", "go,begin,record",
+        "--stop-commands", "halt,finish,done", 
+        "--status-commands", "check,info"
+      ]
+    }
+  }
+}
+```
+
+**Multilingual setup (Spanish/French):**
+```json
+{
+  "mcpServers": {
+    "voice-to-text": {
+      "command": "./target/release/voice-to-text-mcp",
+      "args": [
+        "--mcp-server",
+        "models/ggml-base.en.bin",
+        "--start-commands", "start,iniciar,commencer",
+        "--stop-commands", "stop,parar,arrêter",
+        "--status-commands", "status,estado,statut"
+      ]
+    }
+  }
+}
+```
+
+**Claude Desktop Integration:**
 ```json
 {
   "mcpServers": {
     "voice-to-text": {
       "command": "/full/path/to/target/release/voice-to-text-mcp",
-      "args": ["--mcp-server", "/full/path/to/models/ggml-base.en.bin"]
+      "args": [
+        "--mcp-server", 
+        "/full/path/to/models/ggml-base.en.bin",
+        "--start-commands", "record,begin",
+        "--stop-commands", "transcribe,done"
+      ]
     }
   }
 }
@@ -263,20 +407,80 @@ The slash commands are automatically available when you open this project in Cla
 {
   "method": "tools/call", 
   "params": {
-    "name": "start_recording",
-    "arguments": {}
+    "name": "listen",
+    "arguments": {
+      "command": "start"
+    }
+  }
+}
+
+// Start recording (voice commands are enabled by default)
+{
+  "method": "tools/call", 
+  "params": {
+    "name": "listen",
+    "arguments": {
+      "command": "start"
+    }
+  }
+}
+
+// Optional: Disable voice commands for a specific session
+{
+  "method": "tools/call", 
+  "params": {
+    "name": "listen",
+    "arguments": {
+      "command": "start",
+      "enable_voice_commands": false
+    }
+  }
+}
+
+// Stop recording and get transcription
+{
+  "method": "tools/call",
+  "params": {
+    "name": "listen", 
+    "arguments": {
+      "command": "stop"
+    }
+  }
+}
+
+// Check recording status
+{
+  "method": "tools/call",
+  "params": {
+    "name": "listen",
+    "arguments": {
+      "command": "status"
+    }
+  }
+}
+
+// Toggle recording (start if stopped, stop if started)
+{
+  "method": "tools/call",
+  "params": {
+    "name": "listen",
+    "arguments": {
+      "command": ""
+    }
   }
 }
 ```
 
 ## Development
 
-The implementation provides a complete voice-to-text MCP server. Future enhancements could include:
+The implementation provides a complete voice-to-text MCP server with advanced voice command recognition. Future enhancements could include:
 
 1. **Audio Format Support** - Support for MP3, OGG, and other formats
 2. **Streaming Transcription** - Real-time transcription as audio is captured
 3. **Multi-language Models** - Automatic language detection
 4. **Configuration API** - Runtime configuration of audio devices and models
+5. **Advanced Voice Commands** - Support for more complex voice interactions and custom phrases
+6. **Voice Command Training** - Custom voice command recognition training
 
 ## System Requirements
 

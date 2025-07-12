@@ -113,9 +113,36 @@ VOICE_DEBUG=true ./target/release/voice-to-text-mcp ggml-base.en.bin
 
 The server implements these MCP tools:
 - `transcribe_file`: Process WAV files
-- `start_recording`: Begin live audio capture
-- `stop_recording`: Stop recording and get transcription
-- `get_recording_status`: Check current recording state
+- `listen`: Unified voice control with configurable commands (start/stop/status/toggle)
+
+### Voice Command Configuration
+
+Commands are configurable via CLI arguments or environment variables:
+
+**Configuration Priority:**
+1. CLI arguments (highest priority)
+2. Environment variables (`VOICE_START_COMMANDS`, etc.)
+3. Default commands
+
+**Default Commands:**
+- Start: `start`, `begin`, `record`
+- Stop: `stop`, `end`, `finish`
+- Status: `status`, `check`, `info`
+- Toggle: `toggle`, `switch`, `""` (empty)
+
+**Example CLI Configuration:**
+```bash
+# Custom commands
+./target/release/voice-to-text-mcp --mcp-server models/ggml-base.en.bin \
+  --start-commands "go,record,iniciar" \
+  --stop-commands "halt,done,parar" \
+  --status-commands "info,estado"
+
+# Environment variable fallback
+export VOICE_START_COMMANDS="go,record"
+export VOICE_STOP_COMMANDS="halt,done"
+./target/release/voice-to-text-mcp --mcp-server models/ggml-base.en.bin
+```
 
 ### MCP Message Flow
 1. Client sends JSON-RPC requests via stdio

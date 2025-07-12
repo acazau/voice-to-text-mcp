@@ -2,8 +2,31 @@ use voice_to_text_mcp::VoiceToTextService;
 use std::time::Duration;
 use tokio::time::sleep;
 
+// Helper function to check if audio device is available
+fn has_audio_device() -> bool {
+    use cpal::traits::{DeviceTrait, HostTrait};
+    
+    let host = cpal::default_host();
+    match host.default_input_device() {
+        Some(device) => {
+            // Try to get a supported config to verify the device works
+            match device.default_input_config() {
+                Ok(_) => true,
+                Err(_) => false,
+            }
+        },
+        None => false,
+    }
+}
+
 #[tokio::test]
 async fn test_complete_recording_workflow() {
+    // Skip audio hardware tests in CI or headless environments
+    if std::env::var("CI").is_ok() || std::env::var("GITHUB_ACTIONS").is_ok() || !has_audio_device() {
+        println!("Skipping audio hardware test in CI/headless environment");
+        return;
+    }
+    
     let service = VoiceToTextService::new();
     
     // Initially not recording
@@ -34,6 +57,12 @@ async fn test_complete_recording_workflow() {
 
 #[tokio::test]
 async fn test_multiple_start_stop_cycles() {
+    // Skip audio hardware tests in CI or headless environments
+    if std::env::var("CI").is_ok() || std::env::var("GITHUB_ACTIONS").is_ok() || !has_audio_device() {
+        println!("Skipping audio hardware test in CI/headless environment");
+        return;
+    }
+    
     let service = VoiceToTextService::new();
     
     for _i in 0..3 {
@@ -55,6 +84,12 @@ async fn test_multiple_start_stop_cycles() {
 
 #[tokio::test]
 async fn test_concurrent_operations() {
+    // Skip audio hardware tests in CI or headless environments
+    if std::env::var("CI").is_ok() || std::env::var("GITHUB_ACTIONS").is_ok() || !has_audio_device() {
+        println!("Skipping audio hardware test in CI/headless environment");
+        return;
+    }
+    
     let service = VoiceToTextService::new();
     
     // Try multiple concurrent start operations
